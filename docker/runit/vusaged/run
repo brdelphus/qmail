@@ -1,0 +1,5 @@
+#!/bin/sh
+# vusaged — vpopmail quota usage cache daemon.
+# Listens on a Unix socket so vpopmail can serve quota lookups without
+# hitting the filesystem on every delivery.
+exec /home/vpopmail/bin/vusaged 2>&1

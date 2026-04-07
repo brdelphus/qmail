@@ -29,6 +29,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libmariadb-dev-compat \
         libpq-dev \
         libldap-dev \
+        libevent-dev \
+        mandoc \
         groff \
     && rm -rf /var/lib/apt/lists/*
 
@@ -57,7 +59,19 @@ RUN wget -q https://www.sagredo.eu/files/qmail/tar/libsrs2-1.0.18.tar.gz \
  && make \
  && make install
 
-# ── Step 1b: ucspi-ssl ───────────────────────────────────────────────────────
+# ── Step 1b: ucspi-tcp6 ──────────────────────────────────────────────────────
+# IPv6-capable replacement for DJB's ucspi-tcp, by Erwin Hoffmann (fehcom.de).
+# Provides tcpserver that binds on :: for dual-stack IPv4+IPv6.
+# Requires mandoc (since v1.13.05). Installs tcpserver/tcpclient to
+# /usr/local/bin — takes precedence over Debian's ucspi-tcp at runtime.
+ARG TCP6_VERSION=1.13.07
+RUN wget -q https://www.fehcom.de/ipnet/ucspi-tcp6/ucspi-tcp6-${TCP6_VERSION}.tgz \
+ && tar xzf ucspi-tcp6-${TCP6_VERSION}.tgz \
+ && cd net/ucspi-tcp6/ucspi-tcp6-${TCP6_VERSION} \
+ && package/install \
+ && cp compile/tcpserver compile/tcpclient /usr/local/bin/
+
+# ── Step 1c: ucspi-ssl ───────────────────────────────────────────────────────
 # Not in Debian's repos; build from Erwin Hoffmann's fork (OpenSSL 3.x
 # compatible). package/install compiles but doesn't install anywhere
 # (command-cp is empty), so we copy sslserver/sslclient to /usr/local/bin
@@ -101,6 +115,7 @@ RUN wget -q https://github.com/sagredo-dev/vpopmail/archive/refs/tags/v${VPOPMAI
         --enable-auth-module="${VPOPMAIL_AUTH}" \
         --enable-file-locking=flock \
         --enable-auth-logging \
+        --enable-vusaged \
  && make -j"$(nproc)" \
  && make install-strip
 
@@ -122,6 +137,17 @@ RUN wget -q https://github.com/sagredo-dev/autorespond/archive/refs/tags/v2.0.9.
 COPY . /usr/src/qmail/
 WORKDIR /usr/src/qmail
 RUN make it && make setup
+
+# ── Step 4b: jgreylist ───────────────────────────────────────────────────────
+# File-based greylisting wrapper for qmail-smtpd by John Simpson.
+# Stores greylist state in /var/qmail/jgreylist (plain files, no DB needed).
+# jgreylist-clean purges expired entries; run periodically via cron/external.
+RUN wget -q https://notes.sagredo.eu/files/qmail/patches/greylisting/jms/jgreylist.c \
+ && cc -o /var/qmail/bin/jgreylist jgreylist.c \
+ && chmod 755 /var/qmail/bin/jgreylist \
+ && wget -q -O /var/qmail/bin/jgreylist-clean \
+        https://notes.sagredo.eu/files/qmail/patches/greylisting/jms/jgreylist-clean \
+ && chmod 755 /var/qmail/bin/jgreylist-clean
 
 # ── Step 5: ezmlm-idx ────────────────────────────────────────────────────────
 # High-speed mailing list manager for qmail.
@@ -187,6 +213,12 @@ ARG VPOPMAIL_AUTH=cdb
 # Runtime client libraries — only the one matching the compiled-in backend
 # is strictly needed, but installing all keeps the image backend-agnostic so
 # you can swap the backend by rebuilding without touching this stage.
+# Pin Dovecot to 2.3.x — Dovecot 2.4 removed the checkpassword passdb driver
+# used by vchkpw. Bookworm ships 2.3.19.1; the preference file blocks any
+# future upgrade past 2.3 if the base image ever moves to a newer release.
+RUN printf 'Package: dovecot-*\nPin: version 1:2.3.*\nPin-Priority: 1001\n' \
+        > /etc/apt/preferences.d/dovecot-23
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
         runit \
         ucspi-tcp \
@@ -197,7 +229,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libmariadb3 \
         libpq5 \
         libldap-2.5-0 \
+        libevent-2.1-7 \
         dovecot-imapd \
+        dovecot-pop3d \
+        dovecot-sieve \
+        dovecot-managesieved \
         lighttpd \
         lighttpd-mod-authn-file \
         apache2-utils \
@@ -205,7 +241,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Same pinned UIDs/GIDs as builder — no ownership fix-up needed
+# Same pinned UIDs/GIDs as builder — no ownership fix-up needed.
+# Cross-group memberships for qmail ↔ vpopmail ↔ Dovecot interop:
+#   vpopmail → qmail  : vpopmail tools can interact with qmail queue/binaries
+#   qmailq   → vchkpw : qmail-queue can access vpopmail domain/user structures
+#   dovecot  → qmail  : Dovecot processes (LDA, auth) can interact with qmail
 RUN groupadd -g 2107 qmail \
  && groupadd -g 2108 nofiles \
  && groupadd -g 2109 vchkpw \
@@ -213,10 +253,11 @@ RUN groupadd -g 2107 qmail \
  && useradd -u 2108 -g nofiles -d /var/qmail       -M -s /usr/sbin/nologin qmaild \
  && useradd -u 2109 -g nofiles -d /var/qmail       -M -s /usr/sbin/nologin qmaill \
  && useradd -u 2110 -g qmail   -d /var/qmail       -M -s /usr/sbin/nologin qmailp \
- && useradd -u 2111 -g nofiles -d /var/qmail       -M -s /usr/sbin/nologin qmailq \
+ && useradd -u 2111 -g nofiles -G vchkpw -d /var/qmail -M -s /usr/sbin/nologin qmailq \
  && useradd -u 2112 -g qmail   -d /var/qmail       -M -s /usr/sbin/nologin qmailr \
  && useradd -u 2113 -g qmail   -d /var/qmail       -M -s /usr/sbin/nologin qmails \
- && useradd -u 89   -g vchkpw  -d /home/vpopmail   -m -s /usr/sbin/nologin vpopmail
+ && useradd -u 89   -g vchkpw  -G qmail -d /home/vpopmail -m -s /usr/sbin/nologin vpopmail \
+ && usermod -a -G qmail dovecot
 
 COPY --from=builder /var/qmail        /var/qmail
 COPY --from=builder /home/vpopmail    /home/vpopmail
@@ -237,7 +278,7 @@ COPY docker/lighttpd.conf /etc/lighttpd/lighttpd.conf
 # Runit service definitions
 COPY docker/runit /etc/sv
 RUN mkdir -p /etc/service /var/log/qmail \
- && for svc in qmail-smtpd qmail-send qmail-submission qmail-smtps dovecot lighttpd; do \
+ && for svc in qmail-smtpd qmail-send qmail-submission qmail-smtps dovecot lighttpd vusaged; do \
       chmod +x /etc/sv/$svc/run /etc/sv/$svc/log/run; \
       mkdir -p /var/log/qmail/$svc; \
       ln -s /etc/sv/$svc /etc/service/$svc; \
@@ -252,11 +293,12 @@ RUN chmod +x /entrypoint.sh /healthcheck.sh
 # Label the compiled-in vpopmail backend for introspection
 LABEL vpopmail.auth="${VPOPMAIL_AUTH}"
 
-EXPOSE 25 80 110 143 465 587 993 995
+EXPOSE 25 80 110 143 465 587 993 995 4190
 
 # Single persistent volume — all mutable data lives under /srv/mail:
 #   /srv/mail/qmail/control     → symlinked from /var/qmail/control
 #   /srv/mail/qmail/queue       → symlinked from /var/qmail/queue
+#   /srv/mail/jgreylist         → symlinked from /var/qmail/jgreylist
 #   /srv/mail/vpopmail/domains  → symlinked from /home/vpopmail/domains
 #   /srv/mail/vpopmail/etc      → symlinked from /home/vpopmail/etc
 # The entrypoint creates the subdirs and symlinks on first run.

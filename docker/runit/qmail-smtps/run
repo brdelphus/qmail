@@ -10,6 +10,8 @@ MAXSMTPD=$(cat $QMAILDIR/control/concurrencyincoming)
 SOFTLIMIT=$(cat $QMAILDIR/control/softlimit)
 LOCAL=$(head -1 $QMAILDIR/control/me)
 TCPRULES_DIR=$QMAILDIR/control
+DUALSTACK=$(cat $QMAILDIR/control/dualstack 2>/dev/null || echo 0)
+[ "$DUALSTACK" = "1" ] && BINDADDR="::" || BINDADDR="0"
 
 CERTFILE=$QMAILDIR/control/servercert.pem
 DHFILE=$QMAILDIR/control/dh4096.pem
@@ -23,6 +25,6 @@ exec chpst -m "$SOFTLIMIT" \
     /usr/local/bin/sslserver -v -R -l "$LOCAL" \
     -n "$CERTFILE" -K "$CERTFILE" \
     -x ${TCPRULES_DIR}/tcp.smtps.cdb -c "$MAXSMTPD" \
-    -u "$QMAILDUID" -g "$NOFILESGID" 0 465 \
+    -u "$QMAILDUID" -g "$NOFILESGID" "$BINDADDR" 465 \
     $QMAILDIR/bin/qmail-smtpd \
     ~vpopmail/bin/vchkpw /bin/true 2>&1

@@ -33,6 +33,7 @@ link_to_volume() {
 
 link_to_volume /var/qmail/control    /srv/mail/qmail/control
 link_to_volume /var/qmail/queue      /srv/mail/qmail/queue
+link_to_volume /var/qmail/jgreylist  /srv/mail/jgreylist
 link_to_volume /home/vpopmail/domains /srv/mail/vpopmail/domains
 link_to_volume /home/vpopmail/etc    /srv/mail/vpopmail/etc
 
@@ -85,24 +86,49 @@ if [ ! -f "$CONTROL/me" ]; then
     printf '%s' "$QMAIL_GREETDELAY"          > "$CONTROL/greetdelay"
     printf '%s' "$QMAIL_SURBL"               > "$CONTROL/surbl"
 
-    printf '|/var/qmail/bin/vdelivermail '"''"' delete\n' \
+    # Deliver via Dovecot-LDA so Sieve filters run on every inbound message.
+    # qmail-local sets $EXT (local part) and $HOST (domain) which dovecot-lda
+    # uses to look up the user in the static userdb.
+    printf '|/usr/lib/dovecot/dovecot-lda -d "$EXT@$HOST" -f "$SENDER"\n' \
         > "$CONTROL/defaultdelivery"
 
+    # Global Sieve script directories — drop .sieve files here for server-wide
+    # rules (e.g. spam-to-Junk). Scripts run in alphabetical order.
+    mkdir -p "$CONTROL/sieve/before.d" "$CONTROL/sieve/after.d"
+
+    # QMAIL_RELAY_NETS — comma-separated list of IPs/prefixes that get RELAYCLIENT
+    # on port 25 (e.g. "192.168.1.,10.0.0.2"). Loopback is always trusted.
+    # QMAIL_CHKUSER_WRONGRCPTLIMIT — max invalid recipients before disconnect (default: 3)
+    QMAIL_CHKUSER_WRONGRCPTLIMIT=${QMAIL_CHKUSER_WRONGRCPTLIMIT:-3}
+
     if [ ! -f "$CONTROL/tcp.smtp.cdb" ]; then
-        printf '0.0.0.0:allow,RELAYCLIENT="",SMTPD_GREETDELAY="0"\n127.:allow,RELAYCLIENT="",SMTPD_GREETDELAY="0"\n:allow,CHKUSER_WRONGRCPTLIMIT="3"\n' \
-            > "$CONTROL/tcp.smtp"
+        {
+            printf '0.0.0.0:allow,RELAYCLIENT="",SMTPD_GREETDELAY="0"\n'
+            printf '127.:allow,RELAYCLIENT="",SMTPD_GREETDELAY="0"\n'
+            [ "$QMAIL_DUALSTACK" = "1" ] && \
+                printf '::1:allow,RELAYCLIENT="",SMTPD_GREETDELAY="0"\n'
+            if [ -n "$QMAIL_RELAY_NETS" ]; then
+                echo "$QMAIL_RELAY_NETS" | tr ',' '\n' | while IFS= read -r net; do
+                    net=$(echo "$net" | tr -d ' ')
+                    [ -n "$net" ] && printf '%s:allow,RELAYCLIENT="",SMTPD_GREETDELAY="0"\n' "$net"
+                done
+            fi
+            printf ':allow,CHKUSER_WRONGRCPTLIMIT="%s"\n' "$QMAIL_CHKUSER_WRONGRCPTLIMIT"
+        } > "$CONTROL/tcp.smtp"
         /usr/bin/tcprules "$CONTROL/tcp.smtp.cdb" "$CONTROL/tcp.smtp.tmp" \
             < "$CONTROL/tcp.smtp"
     fi
 
     if [ ! -f "$CONTROL/tcp.submission.cdb" ]; then
-        printf ':allow,CHKUSER_WRONGRCPTLIMIT="3"\n' > "$CONTROL/tcp.submission"
+        printf ':allow,CHKUSER_WRONGRCPTLIMIT="%s"\n' "$QMAIL_CHKUSER_WRONGRCPTLIMIT" \
+            > "$CONTROL/tcp.submission"
         /usr/bin/tcprules "$CONTROL/tcp.submission.cdb" "$CONTROL/tcp.submission.tmp" \
             < "$CONTROL/tcp.submission"
     fi
 
     if [ ! -f "$CONTROL/tcp.smtps.cdb" ]; then
-        printf ':allow,CHKUSER_WRONGRCPTLIMIT="3"\n' > "$CONTROL/tcp.smtps"
+        printf ':allow,CHKUSER_WRONGRCPTLIMIT="%s"\n' "$QMAIL_CHKUSER_WRONGRCPTLIMIT" \
+            > "$CONTROL/tcp.smtps"
         /usr/bin/tcprules "$CONTROL/tcp.smtps.cdb" "$CONTROL/tcp.smtps.tmp" \
             < "$CONTROL/tcp.smtps"
     fi
@@ -171,6 +197,38 @@ if [ ! -f "$CONTROL/me" ]; then
 EOF
     fi
 
+    # ── Dual-stack (IPv4 + IPv6) setup ────────────────────────────────────────
+    # QMAIL_DUALSTACK=1 binds tcpserver on :: (accepts IPv4 + IPv6).
+    # QMAIL_DUALSTACK=0 (default) binds on 0.0.0.0 (IPv4 only).
+    # Requires Docker IPv6 to be enabled in the daemon config.
+    QMAIL_DUALSTACK=${QMAIL_DUALSTACK:-0}
+    printf '%s' "$QMAIL_DUALSTACK" > "$CONTROL/dualstack"
+
+    # ── Optional: greylisting setup ───────────────────────────────────────────
+    # QMAIL_GREYLISTING=1 enables jgreylist wrapping on port 25.
+    # State files live in /var/qmail/jgreylist (persisted in the volume).
+    # Run jgreylist-clean periodically to purge expired entries.
+    QMAIL_GREYLISTING=${QMAIL_GREYLISTING:-0}
+    printf '%s' "$QMAIL_GREYLISTING" > "$CONTROL/greylisting"
+    chown vpopmail:vchkpw "$QMAILDIR/jgreylist"
+
+    # ── Optional: qmail-taps-extended setup ───────────────────────────────────
+    # QMAIL_TAPS — semicolon-separated tap rules, each in the format:
+    #   TYPE:REGEX:DESTINATION
+    #   TYPE: F (from), T (to), A (all/catch-all)
+    #   e.g. "F:.*@example.com:archive@example.com;T:.*@example.com:audit@other.com"
+    # The taps file is plain text — edit it directly on a live container and
+    # qmail picks up changes without a restart.
+    if [ ! -f "$CONTROL/taps" ]; then
+        if [ -n "$QMAIL_TAPS" ]; then
+            echo "$QMAIL_TAPS" | tr ';' '\n' > "$CONTROL/taps"
+            echo "qmail: taps configured"
+        else
+            # Empty file — tapping disabled until rules are added manually
+            touch "$CONTROL/taps"
+        fi
+    fi
+
     # ── Optional: DNSBL/RBL setup ──────────────────────────────────────────────
     # Create default dnsbllist if not present. Edit to customize blocklists.
     if [ ! -f "$CONTROL/dnsbllist" ]; then
@@ -205,6 +263,48 @@ fi
 if [ -n "$QMAIL_DOMAIN" ] && [ ! -d "/srv/mail/vpopmail/domains/$QMAIL_DOMAIN" ]; then
     echo "qmail: creating vpopmail domain $QMAIL_DOMAIN"
     /home/vpopmail/bin/vadddomain "$QMAIL_DOMAIN"
+    # vadddomain writes a vdelivermail .qmail-default — replace with dovecot-lda
+    # so Sieve filters run on every delivery to this domain.
+    printf '|/usr/lib/dovecot/dovecot-lda -d "$EXT@$HOST" -f "$SENDER"\n' \
+        > "/home/vpopmail/domains/$QMAIL_DOMAIN/.qmail-default"
+    chown vpopmail:vchkpw "/home/vpopmail/domains/$QMAIL_DOMAIN/.qmail-default"
+fi
+
+# ── SNI certificate setup (runs every startup) ────────────────────────────────
+# QMAIL_SNI_CERTS — semicolon-separated triplets: domain:cert_path:key_path
+# Supports multiple domains beyond the primary (e.g. additional hosted domains).
+# Re-runs on every startup so renewed Let's Encrypt certs are picked up without
+# rebuilding.
+#
+# Example:
+#   QMAIL_SNI_CERTS: "mail2.example.org:/etc/letsencrypt/live/mail2.example.org/fullchain.pem:/etc/letsencrypt/live/mail2.example.org/privkey.pem"
+#
+# For qmail: combines cert+key into control/servercerts/<domain>/servercert.pem
+# For Dovecot: writes local_name blocks to control/dovecot-sni.conf (included automatically)
+if [ -n "$QMAIL_SNI_CERTS" ]; then
+    : > "$CONTROL/dovecot-sni.conf"
+    echo "$QMAIL_SNI_CERTS" | tr ';' '\n' | while IFS= read -r triplet; do
+        domain=$(echo "$triplet" | cut -d: -f1 | tr -d ' ')
+        cert=$(echo "$triplet"   | cut -d: -f2 | tr -d ' ')
+        key=$(echo "$triplet"    | cut -d: -f3 | tr -d ' ')
+        [ -z "$domain" ] || [ -z "$cert" ] || [ -z "$key" ] && continue
+        if [ ! -f "$cert" ]; then
+            echo "qmail: WARNING: SNI cert not found for $domain: $cert" >&2; continue
+        fi
+        if [ ! -f "$key" ]; then
+            echo "qmail: WARNING: SNI key not found for $domain: $key" >&2; continue
+        fi
+        echo "qmail: installing SNI cert for $domain"
+        mkdir -p "$CONTROL/servercerts/$domain"
+        cat "$cert" "$key" > "$CONTROL/servercerts/$domain/servercert.pem"
+        chmod 600 "$CONTROL/servercerts/$domain/servercert.pem"
+        cat >> "$CONTROL/dovecot-sni.conf" <<EOF
+local_name $domain {
+  ssl_cert = <$cert
+  ssl_key  = <$key
+}
+EOF
+    done
 fi
 
 # ── Hand off to runit ─────────────────────────────────────────────────────────

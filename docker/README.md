@@ -123,6 +123,8 @@ docker run --rm \
 | `QMAIL_TLS_CERT` | no | — | Path to TLS certificate PEM (full chain) |
 | `QMAIL_TLS_KEY` | no | — | Path to TLS private key PEM |
 | `QMAIL_DH_BITS` | no | `2048` | DH parameter bit size (`2048` or `4096`) |
+| `QMAIL_RELAY_NETS` | no | — | Comma-separated IPs/prefixes trusted to relay on port 25 (e.g. `"192.168.1.,10.0.0.2"`). Loopback is always trusted. |
+| `QMAIL_CHKUSER_WRONGRCPTLIMIT` | no | `3` | Max invalid recipients before disconnect, applied to all SMTP ports |
 | `VQADMIN_USER` | no | `admin` | vqadmin HTTP auth username |
 | `VQADMIN_PASS` | no | auto-generated | vqadmin HTTP auth password |
 
@@ -153,8 +155,9 @@ The container runs six supervised services under `runsvdir`:
 | `qmail-send` | — | Queue manager; enables DKIM signing if `control/filterargs` exists |
 | `qmail-submission` | 587 | Auth required (`SMTPAUTH=!`), STARTTLS |
 | `qmail-smtps` | 465 | Auth required, implicit TLS via `sslserver` |
-| `dovecot` | 110 / 143 / 993 / 995 | POP3, IMAP, IMAPS, POP3S — Maildir via vpopmail domains, `vchkpw` auth |
+| `dovecot` | 110 / 143 / 993 / 995 | POP3, IMAP, IMAPS, POP3S — Maildir via vpopmail domains, `vchkpw` auth. Pinned to 2.3.x (Dovecot 2.4 removed the `checkpassword` driver) |
 | `lighttpd` | 80 | Web server for qmailadmin CGI interface |
+| `vusaged` | — | vpopmail quota usage cache daemon — reduces filesystem `stat()` calls on delivery |
 
 Logs are written via `svlogd` to `/var/log/qmail/<service>/`.
 
@@ -206,6 +209,35 @@ docker compose -f docker/docker-compose.yml restart
 cat fullchain.pem privkey.pem > /var/lib/docker/volumes/maildata/_data/qmail/control/servercert.pem
 chmod 600 /var/lib/docker/volumes/maildata/_data/qmail/control/servercert.pem
 docker compose -f docker/docker-compose.yml restart
+```
+
+### SNI — multiple domains
+
+SNI (Server Name Indication) lets the server present different certificates
+depending on which hostname the client requests during the TLS handshake.
+Both qmail and Dovecot support it.
+
+Set `QMAIL_SNI_CERTS` to a semicolon-separated list of `domain:cert:key` triplets:
+
+```yaml
+environment:
+  QMAIL_SNI_CERTS: "mail2.example.org:/etc/letsencrypt/live/mail2.example.org/fullchain.pem:/etc/letsencrypt/live/mail2.example.org/privkey.pem;mail3.example.net:/etc/letsencrypt/live/mail3.example.net/fullchain.pem:/etc/letsencrypt/live/mail3.example.net/privkey.pem"
+volumes:
+  - /etc/letsencrypt:/etc/letsencrypt:ro
+  - maildata:/srv/mail
+```
+
+On every startup the entrypoint:
+- Combines each cert+key into `control/servercerts/<domain>/servercert.pem` (qmail SNI)
+- Generates `control/dovecot-sni.conf` with `local_name` blocks (Dovecot SNI)
+
+The primary domain cert (`QMAIL_TLS_CERT` / `QMAIL_TLS_KEY`) remains the fallback
+for clients that don't send SNI.
+
+Verify with:
+
+```sh
+openssl s_client -starttls smtp -connect mail.example.com:587 -servername mail2.example.org
 ```
 
 ### DH parameters
@@ -339,6 +371,279 @@ docker compose -f docker/docker-compose.yml exec qmail \
 - Add/remove virtual domains
 - View domain statistics
 - Manage domain limits
+
+---
+
+## Sieve filtering and ManageSieve
+
+[Pigeonhole Sieve](https://pigeonhole.dovecot.org/) is installed via
+`dovecot-sieve` and `dovecot-managesieved` (Debian packages, pre-compiled
+against Dovecot 2.3.19.1 — no source build needed).
+
+### Delivery pipeline
+
+Mail is delivered via **Dovecot-LDA** instead of `vdelivermail`, enabling Sieve
+to filter every inbound message before it hits the Maildir:
+
+```
+qmail-local → .qmail-default → dovecot-lda → Sieve → Maildir
+```
+
+The `.qmail-default` in each domain directory is set on first run:
+```
+|/usr/lib/dovecot/dovecot-lda -d "$EXT@$HOST" -f "$SENDER"
+```
+
+### ManageSieve (port 4190)
+
+Mail clients (Thunderbird, Roundcube, etc.) connect to port 4190 to upload and
+manage Sieve scripts. Authentication uses the same credentials as IMAP/POP3.
+
+Per-user scripts are stored at:
+- `~/sieve/` — script collection (managed via ManageSieve)
+- `~/.dovecot.sieve` — active script symlink (points into `~/sieve/`)
+
+Where `~` expands to `/home/vpopmail/domains/<domain>/<user>`.
+
+### Global Sieve scripts
+
+Server-wide rules (spam-to-Junk, virus tagging, etc.) live in the volume and
+run for every user before or after their personal script:
+
+| Directory | Runs |
+|---|---|
+| `/srv/mail/qmail/control/sieve/before.d/` | Before user's script (alphabetical) |
+| `/srv/mail/qmail/control/sieve/after.d/` | After user's script (alphabetical) |
+
+After adding or changing a global script, compile it:
+
+```sh
+docker compose -f docker/docker-compose.yml exec qmail \
+    sievec /var/qmail/control/sieve/before.d/10-spam.sieve
+```
+
+Example spam-to-Junk global script (`before.d/10-spam.sieve`):
+
+```sieve
+require ["fileinto", "mailbox"];
+if header :contains "X-Spam-Flag" "YES" {
+    fileinto :create "Junk";
+    stop;
+}
+```
+
+### Adding Sieve to an existing domain
+
+If the container was started before Sieve support was added, update the
+domain's delivery command manually:
+
+```sh
+docker compose -f docker/docker-compose.yml exec qmail \
+    sh -c 'printf "|/usr/lib/dovecot/dovecot-lda -d \"\$EXT@\$HOST\" -f \"\$SENDER\"\n" \
+        > /home/vpopmail/domains/example.com/.qmail-default && \
+        chown vpopmail:vchkpw /home/vpopmail/domains/example.com/.qmail-default'
+```
+
+---
+
+## tcprules (relay and recipient policy)
+
+Three CDB files control TCP access policy, compiled from plain-text source files
+by `tcprules` on first run. They live in `/srv/mail/qmail/control/`.
+
+| File | Port | Purpose |
+|---|---|---|
+| `tcp.smtp` | 25 | Inbound relay — trusted IPs get `RELAYCLIENT=""`, everyone else can receive mail but not relay |
+| `tcp.submission` | 587 | Authenticated submission — all connections allowed, relay gated by `SMTPAUTH` |
+| `tcp.smtps` | 465 | Same as submission over implicit TLS |
+
+The `tcp.smtp` file is generated from the env vars at first run:
+
+```
+0.0.0.0:allow,RELAYCLIENT="",SMTPD_GREETDELAY="0"   # always trusted
+127.:allow,RELAYCLIENT="",SMTPD_GREETDELAY="0"        # always trusted
+192.168.1.:allow,RELAYCLIENT="",SMTPD_GREETDELAY="0"  # from QMAIL_RELAY_NETS
+:allow,CHKUSER_WRONGRCPTLIMIT="3"                      # catch-all
+```
+
+### Modifying rules on a live container
+
+The CDB files are only seeded once (on first run). To update them on an existing
+volume, edit the source file and recompile:
+
+```sh
+docker compose -f docker/docker-compose.yml exec qmail \
+    sh -c 'vi /var/qmail/control/tcp.smtp && \
+           tcprules /var/qmail/control/tcp.smtp.cdb \
+                    /var/qmail/control/tcp.smtp.tmp \
+                    < /var/qmail/control/tcp.smtp'
+```
+
+To force a full regeneration from env vars, remove the CDB files and restart:
+
+```sh
+docker compose -f docker/docker-compose.yml exec qmail \
+    rm /var/qmail/control/tcp.smtp.cdb \
+       /var/qmail/control/tcp.submission.cdb \
+       /var/qmail/control/tcp.smtps.cdb
+docker compose -f docker/docker-compose.yml restart
+```
+
+---
+
+## IPv6 / Dual-stack
+
+IPv6 support is provided by [ucspi-tcp6](https://www.fehcom.de/ipnet/ucspi-tcp6.html)
+(Erwin Hoffmann), compiled in the builder stage. It replaces Debian's `ucspi-tcp`
+as the network listener for qmail's SMTP ports.
+
+By default the container binds on `0.0.0.0` (IPv4 only). Enable dual-stack to
+bind on `::` and accept both IPv4 and IPv6 connections:
+
+```yaml
+environment:
+  QMAIL_DUALSTACK: 1
+```
+
+Requires IPv6 to be enabled in Docker:
+
+```json
+# /etc/docker/daemon.json
+{
+  "ipv6": true,
+  "fixed-cidr-v6": "fd00::/80"
+}
+```
+
+And in `docker-compose.yml`:
+
+```yaml
+networks:
+  default:
+    enable_ipv6: true
+```
+
+### What changes with dualstack enabled
+
+| Component | IPv4 only (`0`) | Dual-stack (`::`) |
+|---|---|---|
+| Port 25 (SMTP) | `0.0.0.0` | `::` |
+| Port 587 (Submission) | `0.0.0.0` | `::` |
+| Port 465 (SMTPS) | `0.0.0.0` | `::` |
+| `tcp.smtp` loopback | `127.` | `127.` + `::1` |
+| Dovecot (IMAP/POP3) | IPv6 always on | IPv6 always on |
+
+Dovecot handles its own networking and supports IPv6 natively regardless of this
+setting.
+
+### Relay nets with IPv6
+
+If you have IPv6 trusted networks, add them to `QMAIL_RELAY_NETS`:
+
+```yaml
+QMAIL_RELAY_NETS: "192.168.1.,2001:db8::"
+```
+
+---
+
+## Greylisting
+
+[jgreylist](https://qmail.jms1.net/scripts/jgreylist.shtml) by John Simpson
+provides file-based greylisting — no database required. On first contact from
+an unknown sender, qmail temporarily rejects the message (451). Legitimate MTAs
+retry and are whitelisted; spam bots typically don't.
+
+jgreylist wraps `qmail-smtpd` in the port 25 run script and is transparent to
+submission (587) and SMTPS (465) since authenticated users bypass it.
+
+### Enable
+
+```yaml
+environment:
+  QMAIL_GREYLISTING: 1
+```
+
+State files are stored in `/srv/mail/jgreylist` (persisted in the volume).
+
+### How it works
+
+```
+tcpserver → jgreylist → qmail-smtpd
+              ↓
+         First contact: 451 temporary reject (greylisted)
+         Retry contact: pass through to qmail-smtpd
+```
+
+### Cleanup
+
+Expired greylist entries should be purged periodically. Run from outside the
+container (cron, Kubernetes CronJob, etc.):
+
+```sh
+docker compose -f docker/docker-compose.yml exec qmail \
+    /var/qmail/bin/jgreylist-clean
+```
+
+### Persistent volume path
+
+| Volume path | Symlinked from | Contents |
+|---|---|---|
+| `/srv/mail/jgreylist` | `/var/qmail/jgreylist` | Greylist state files |
+
+---
+
+## Mail tapping (qmail-taps-extended)
+
+qmail-taps-extended copies matching messages to a destination address as they
+flow through the queue. Useful for archiving, compliance, or auditing.
+
+### Configuration
+
+Set `QMAIL_TAPS` to a semicolon-separated list of rules at first run:
+
+```yaml
+environment:
+  QMAIL_TAPS: "F:.*@example.com:archive@example.com;T:.*@partner.com:audit@example.com"
+```
+
+Each rule uses the format `TYPE:REGEX:DESTINATION`:
+
+| Field | Values | Description |
+|---|---|---|
+| `TYPE` | `F` | Match on **From** address |
+| | `T` | Match on **To** address |
+| | `A` | Match **all** mail (original Inter7 behavior) |
+| `REGEX` | e.g. `.*@example.com` | Regular expression applied to the address |
+| `DESTINATION` | e.g. `archive@example.com` | Address that receives the copy |
+
+The rules are written to `/var/qmail/control/taps`. If `QMAIL_TAPS` is not set,
+an empty `taps` file is created (tapping disabled).
+
+### Live editing
+
+Unlike CDB-based control files, `taps` is plain text and **takes effect
+immediately** without a restart:
+
+```sh
+docker compose -f docker/docker-compose.yml exec qmail \
+    vi /var/qmail/control/taps
+```
+
+### Examples
+
+```
+# Archive all outbound mail from your domain
+F:.*@example.com:archive@example.com
+
+# Copy all inbound mail to an audit address
+T:.*@example.com:audit@example.com
+
+# Tap a specific user
+T:ceo@example.com:legal@example.com
+
+# Catch-all tap for a domain
+A:.*@example.com:mirror@example.com
+```
 
 ---
 
