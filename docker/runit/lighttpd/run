@@ -1,0 +1,4 @@
+#!/bin/sh
+# Lighttpd for qmailadmin web interface
+# Runs in foreground (-D) so runit can supervise it.
+exec /usr/sbin/lighttpd -D -f /etc/lighttpd/lighttpd.conf 2>&1

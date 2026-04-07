@@ -1,0 +1,4 @@
+#!/bin/sh
+# Dovecot handles both IMAP (143) and IMAPS (993) in a single process.
+# -F runs in foreground so runit can supervise it.
+exec /usr/sbin/dovecot -F -c /etc/dovecot/dovecot.conf 2>&1

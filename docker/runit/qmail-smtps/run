@@ -1,0 +1,28 @@
+#!/bin/sh
+# SMTPS — SMTP over implicit TLS on port 465
+# Uses sslserver (ucspi-ssl) instead of tcpserver for immediate TLS handshake.
+# Authentication is required (submission use case).
+
+QMAILDIR=$(getent passwd qmaild | cut -d: -f6)
+QMAILDUID=$(id -u vpopmail)
+NOFILESGID=$(id -g vpopmail)
+MAXSMTPD=$(cat $QMAILDIR/control/concurrencyincoming)
+SOFTLIMIT=$(cat $QMAILDIR/control/softlimit)
+LOCAL=$(head -1 $QMAILDIR/control/me)
+TCPRULES_DIR=$QMAILDIR/control
+
+CERTFILE=$QMAILDIR/control/servercert.pem
+DHFILE=$QMAILDIR/control/dh4096.pem
+
+# Auth required on port 465 (submission over implicit TLS)
+export SMTPAUTH="!"
+export CHKUSER_START=ALWAYS
+export FORCEAUTHMAILFROM=1
+
+exec chpst -m "$SOFTLIMIT" \
+    /usr/local/bin/sslserver -v -R -l "$LOCAL" \
+    -n "$CERTFILE" -K "$CERTFILE" \
+    -x ${TCPRULES_DIR}/tcp.smtps.cdb -c "$MAXSMTPD" \
+    -u "$QMAILDUID" -g "$NOFILESGID" 0 465 \
+    $QMAILDIR/bin/qmail-smtpd \
+    ~vpopmail/bin/vchkpw /bin/true 2>&1

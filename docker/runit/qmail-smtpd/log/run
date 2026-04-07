@@ -1,0 +1,3 @@
+#!/bin/sh
+mkdir -p /var/log/qmail/qmail-smtpd
+exec chpst -u qmaill /usr/bin/svlogd -tt /var/log/qmail/qmail-smtpd

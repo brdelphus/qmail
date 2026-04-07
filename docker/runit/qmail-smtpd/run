@@ -1,0 +1,32 @@
+#!/bin/sh
+QMAILDIR=$(getent passwd qmaild | cut -d: -f6)
+QMAILDUID=$(id -u vpopmail)
+NOFILESGID=$(id -g vpopmail)
+MAXSMTPD=$(cat $QMAILDIR/control/concurrencyincoming)
+SOFTLIMIT=$(cat $QMAILDIR/control/softlimit)
+LOCAL=$(head -1 $QMAILDIR/control/me)
+TCPRULES_DIR=$QMAILDIR/control
+
+export CHKUSER_START=ALWAYS
+export SMTPD_GREETDELAY=5
+export DROP_PRE_GREET=1
+export FORCEAUTHMAILFROM=1
+export SURBL=0
+
+# DKIM verification for inbound mail
+export QMAILQUEUE=$QMAILDIR/bin/qmail-dkim
+export DKIMVERIFY="FGHKLMNOQRTVWp"
+export RELAYCLIENT_NODKIMVERIFY=1
+
+if [ ! -f $QMAILDIR/control/smtpplugins ] || [ ! -d $QMAILDIR/plugins ]; then
+    export ENABLE_SPP=0
+else
+    export ENABLE_SPP=1
+fi
+
+exec chpst -m "$SOFTLIMIT" \
+    /usr/bin/tcpserver -v -R -l "$LOCAL" \
+    -x ${TCPRULES_DIR}/tcp.smtp.cdb -c "$MAXSMTPD" \
+    -u "$QMAILDUID" -g "$NOFILESGID" 0 25 \
+    $QMAILDIR/bin/qmail-smtpd \
+    ~vpopmail/bin/vchkpw /bin/true 2>&1

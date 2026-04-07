@@ -1,0 +1,13 @@
+#!/bin/sh
+QMAILDIR=$(getent passwd qmaild | cut -d: -f6)
+DEFAULTDELIVERY=$(cat $QMAILDIR/control/defaultdelivery 2>/dev/null || echo ./Maildir)
+
+# Enable DKIM signing at delivery time if spawn-filter and filterargs are present
+if [ -r $QMAILDIR/control/filterargs ] && [ -x $QMAILDIR/bin/spawn-filter ]; then
+    exec env - PATH="$QMAILDIR/bin:/usr/bin:/bin" \
+        QMAILREMOTE=$QMAILDIR/bin/spawn-filter \
+        $QMAILDIR/bin/qmail-start "$DEFAULTDELIVERY" 2>&1
+else
+    exec env - PATH="$QMAILDIR/bin:/usr/bin:/bin" \
+        $QMAILDIR/bin/qmail-start "$DEFAULTDELIVERY" 2>&1
+fi
