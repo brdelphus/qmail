@@ -29,6 +29,9 @@ services:
       # QMAIL_TLS_KEY:  /etc/letsencrypt/live/mail.example.com/privkey.pem
       # DH params bit size — 2048 (default, fast) or 4096 (slower, stronger)
       # QMAIL_DH_BITS: 2048
+      # vqadmin (system admin) — password auto-generated if not set
+      # VQADMIN_USER: admin
+      # VQADMIN_PASS: changeme
     ports:
       - "25:25"     # SMTP
       - "80:80"     # HTTP (qmailadmin)

@@ -309,6 +309,36 @@ Open `http://<server-ip>/` in a browser. The root URL redirects to qmailadmin.
 
 ---
 
+## vqadmin (system admin)
+
+[vqadmin](https://github.com/sagredo-dev/vqadmin) is a system-level admin interface
+for managing vpopmail at the domain level (add/remove domains, etc.).
+
+### Access
+
+Open `http://<server-ip>/cgi-bin/vqadmin/vqadmin.cgi`
+
+### Authentication
+
+vqadmin requires HTTP basic auth. Credentials are set on first run:
+
+- **User**: `admin` (or set via `VQADMIN_USER` env var)
+- **Password**: auto-generated (check container logs) or set via `VQADMIN_PASS` env var
+
+To change the password later:
+```sh
+docker compose -f docker/docker-compose.yml exec qmail \
+    htpasswd /var/qmail/control/vqadmin.htpasswd admin
+```
+
+### Features
+
+- Add/remove virtual domains
+- View domain statistics
+- Manage domain limits
+
+---
+
 ## Queue management
 
 ```sh

@@ -176,6 +176,20 @@ EOF
 #-bl.spamcop.net
 EOF
     fi
+
+    # ── vqadmin HTTP auth setup ────────────────────────────────────────────────
+    # vqadmin is a system-level admin tool — requires HTTP basic auth.
+    # Set VQADMIN_PASS env var to configure password, or generate random one.
+    if [ ! -f "$CONTROL/vqadmin.htpasswd" ]; then
+        VQADMIN_USER=${VQADMIN_USER:-admin}
+        if [ -z "$VQADMIN_PASS" ]; then
+            VQADMIN_PASS=$(openssl rand -base64 12)
+            echo "qmail: vqadmin password (user: $VQADMIN_USER): $VQADMIN_PASS"
+        fi
+        htpasswd -bc "$CONTROL/vqadmin.htpasswd" "$VQADMIN_USER" "$VQADMIN_PASS"
+        chmod 640 "$CONTROL/vqadmin.htpasswd"
+        chown vpopmail:vchkpw "$CONTROL/vqadmin.htpasswd"
+    fi
 fi
 
 # ── First-run: create primary vpopmail domain ────────────────────────────────

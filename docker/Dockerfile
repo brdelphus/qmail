@@ -164,6 +164,20 @@ RUN wget -q https://github.com/sagredo-dev/qmailadmin/archive/refs/tags/v${QMA_V
  && make \
  && make install-strip
 
+# ── Step 7: vqadmin ──────────────────────────────────────────────────────────
+# System-level admin interface for vpopmail (add/remove domains, etc.)
+# Requires HTTP basic auth — password set via VQADMIN_PASS env var on first run.
+ARG VQA_VERSION=2.4.7
+RUN wget -q https://github.com/sagredo-dev/vqadmin/archive/refs/tags/v${VQA_VERSION}.tar.gz \
+ && tar xzf v${VQA_VERSION}.tar.gz \
+ && cd vqadmin-${VQA_VERSION} \
+ && chown -R root:root . \
+ && ./configure \
+        --enable-cgibindir=/var/www/qmailadmin/cgi-bin \
+        --enable-qmaildir=/var/qmail \
+ && make \
+ && make install-strip
+
 
 # ── Stage 2: runtime ─────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
@@ -185,6 +199,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libldap-2.5-0 \
         dovecot-imapd \
         lighttpd \
+        lighttpd-mod-authn-file \
+        apache2-utils \
         netcat-openbsd \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
