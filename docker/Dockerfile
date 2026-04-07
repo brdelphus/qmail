@@ -185,6 +185,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libldap-2.5-0 \
         dovecot-imapd \
         lighttpd \
+        netcat-openbsd \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -229,7 +230,8 @@ RUN mkdir -p /etc/service /var/log/qmail \
  && mkdir -p /run/dovecot
 
 COPY docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+COPY docker/healthcheck.sh /healthcheck.sh
+RUN chmod +x /entrypoint.sh /healthcheck.sh
 
 # Label the compiled-in vpopmail backend for introspection
 LABEL vpopmail.auth="${VPOPMAIL_AUTH}"
@@ -243,5 +245,8 @@ EXPOSE 25 80 110 143 465 587 993 995
 #   /srv/mail/vpopmail/etc      → symlinked from /home/vpopmail/etc
 # The entrypoint creates the subdirs and symlinks on first run.
 VOLUME ["/srv/mail"]
+
+HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 \
+    CMD /healthcheck.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
