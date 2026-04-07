@@ -59,11 +59,21 @@ RUN wget -q https://www.sagredo.eu/files/qmail/tar/libsrs2-1.0.18.tar.gz \
  && make \
  && make install
 
-# ── Step 1b: ucspi-tcp6 ──────────────────────────────────────────────────────
+# ── Step 1b: fehQlibs ────────────────────────────────────────────────────────
+# Required by ucspi-tcp6 v1.13+. Provides the DJB-style headers (uint_t.h,
+# stralloc.h, etc.) and support libraries. Symlinked to /usr/local/qlibs so
+# the ucspi-tcp6 build system finds it automatically.
+ARG FEHQLIBS_VERSION=31
+RUN wget -q https://www.fehcom.de/ipnet/fehQlibs/fehQlibs-${FEHQLIBS_VERSION}.tgz \
+ && tar xzf fehQlibs-${FEHQLIBS_VERSION}.tgz -C /usr/local \
+ && make -C /usr/local/fehQlibs-${FEHQLIBS_VERSION}/src \
+ && ln -s /usr/local/fehQlibs-${FEHQLIBS_VERSION} /usr/local/qlibs
+
+# ── Step 1c: ucspi-tcp6 ──────────────────────────────────────────────────────
 # IPv6-capable replacement for DJB's ucspi-tcp, by Erwin Hoffmann (fehcom.de).
 # Provides tcpserver that binds on :: for dual-stack IPv4+IPv6.
-# Requires mandoc (since v1.13.05). Installs tcpserver/tcpclient to
-# /usr/local/bin — takes precedence over Debian's ucspi-tcp at runtime.
+# Requires mandoc (since v1.13.05) and fehQlibs. Installs tcpserver/tcpclient
+# to /usr/local/bin — takes precedence over Debian's ucspi-tcp at runtime.
 ARG TCP6_VERSION=1.13.07
 RUN wget -q https://www.fehcom.de/ipnet/ucspi-tcp6/ucspi-tcp6-${TCP6_VERSION}.tgz \
  && tar xzf ucspi-tcp6-${TCP6_VERSION}.tgz \

@@ -12,39 +12,73 @@ The compilation order is strictly enforced because each step depends on the
 previous one being installed:
 
 ```
-libsrs2 → ucspi-ssl → netqmail → vpopmail → patched qmail → ezmlm-idx → qmailadmin
+fehQlibs → ucspi-tcp6 → ucspi-ssl → libsrs2 → netqmail → vpopmail → autorespond
+         → patched qmail → jgreylist → ezmlm-idx → qmailadmin → vqadmin
 ```
 
 | Step | Why it must come first |
 |---|---|
+| **fehQlibs** | DJB-style headers/libs required by ucspi-tcp6 v1.13+ |
+| **ucspi-tcp6** | `tcpserver` with IPv6 dual-stack support for SMTP ports |
+| **ucspi-ssl** | `sslserver` binary for implicit TLS (SMTPS port 465) |
 | **libsrs2** | qmail links against it at compile time (`conf-ld: -L/usr/local/lib`) |
-| **ucspi-ssl** | `sslserver` binary needed at runtime for SMTPS/POP3S |
-| **netqmail** | `make setup` creates `/var/qmail` with correct layout and ownership before vpopmail's `configure` runs |
-| **vpopmail** | `chkuser.c` includes `vpopmail.h`/`vauth.h` and `qmail-smtpd` links against `/home/vpopmail/etc/lib_deps` |
-| **patched qmail** | overwrites netqmail binaries, keeping the directory structure intact |
+| **netqmail** | creates `/var/qmail` layout before vpopmail's `configure` runs |
+| **vpopmail** | `chkuser.c` includes `vpopmail.h`/`vauth.h`; qmail-smtpd links against `/home/vpopmail/etc/lib_deps` |
+| **autorespond** | vacation responder required by qmailadmin |
+| **patched qmail** | overwrites netqmail binaries |
+| **jgreylist** | file-based greylisting wrapper compiled into `/var/qmail/bin/` |
 | **ezmlm-idx** | mailing list manager, used by qmailadmin |
-| **qmailadmin** | web interface, requires vpopmail and ezmlm-idx |
+| **qmailadmin** | web UI for domain/user management |
+| **vqadmin** | system-level domain admin |
 
 ---
 
 ## Quick start
 
+### Minimum required configuration
+
+Edit `docker/docker-compose.yml` and set at least these two variables before
+starting:
+
+```yaml
+environment:
+  QMAIL_ME: mail.example.com      # FQDN of this server (required)
+  QMAIL_DOMAIN: example.com       # primary virtual domain (required)
+```
+
+Everything else has a working default. On first run the entrypoint will:
+- Write all qmail control files
+- Generate a self-signed TLS cert for `QMAIL_ME` (replace with Let's Encrypt — see TLS section)
+- Generate DKIM keys for `QMAIL_DOMAIN`
+- Create the primary vpopmail domain
+- Set up tcprules CDB files
+
+### Build and start
+
 ```sh
-# 1. Clone and enter the repo
 git clone https://github.com/brdelphus/qmail
 cd qmail
 
-# 2. Edit docker/docker-compose.yml — set QMAIL_ME and QMAIL_DOMAIN
-#    QMAIL_ME:     FQDN of this mail server  (e.g. mail.example.com)
-#    QMAIL_DOMAIN: primary virtual domain    (e.g. example.com)
-
-# 3. Build and start
 docker compose -f docker/docker-compose.yml build
 docker compose -f docker/docker-compose.yml up -d
-
-# 4. Follow startup logs
 docker compose -f docker/docker-compose.yml logs -f
 ```
+
+### Add the first mail user
+
+```sh
+docker compose -f docker/docker-compose.yml exec qmail \
+    /home/vpopmail/bin/vadduser postmaster@example.com yourpassword
+```
+
+### DNS records needed
+
+| Type | Name | Value |
+|---|---|---|
+| A / AAAA | `mail.example.com` | server IP |
+| MX | `example.com` | `mail.example.com` (priority 10) |
+| TXT | `_domainkey.example.com` | contents of `/srv/mail/qmail/control/domainkeys/example.com.dns.txt` |
+| TXT | `example.com` | `v=spf1 mx ~all` |
 
 ---
 
@@ -80,10 +114,11 @@ image defaults and replaces the original paths with symlinks.
 
 | Volume path | Symlinked from | Contents |
 |---|---|---|
-| `/srv/mail/qmail/control` | `/var/qmail/control` | Control files, TLS certs, tcprules CDBs |
-| `/srv/mail/qmail/queue` | `/var/qmail/queue` | Mail queue — must be synchronous FS |
-| `/srv/mail/vpopmail/domains` | `/home/vpopmail/domains` | Virtual domain mailboxes |
-| `/srv/mail/vpopmail/etc` | `/home/vpopmail/etc` | vpopmail config, DB connection strings |
+| `/srv/mail/qmail/control` | `/var/qmail/control` | Control files, TLS certs, DKIM keys, tcprules CDBs, Sieve globals |
+| `/srv/mail/qmail/queue` | `/var/qmail/queue` | Mail queue — must be on a synchronous filesystem |
+| `/srv/mail/jgreylist` | `/var/qmail/jgreylist` | Greylist state files (only used when `QMAIL_GREYLISTING=1`) |
+| `/srv/mail/vpopmail/domains` | `/home/vpopmail/domains` | Virtual domain mailboxes (Maildir) |
+| `/srv/mail/vpopmail/etc` | `/home/vpopmail/etc` | vpopmail config and DB connection strings |
 
 ### Backup
 
@@ -109,24 +144,52 @@ docker run --rm \
 
 ## Environment variables
 
+### Core (first-run, written to control files)
+
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `QMAIL_ME` | yes | — | FQDN of this server (`mail.example.com`) |
+| `QMAIL_ME` | **yes** | — | FQDN of this server (`mail.example.com`) |
 | `QMAIL_DOMAIN` | no | derived from `QMAIL_ME` | Primary virtual domain, created in vpopmail on first run |
-| `QMAIL_SOFTLIMIT` | no | `64000000` | Memory limit (bytes) per SMTP process |
+| `QMAIL_SOFTLIMIT` | no | `64000000` | Memory limit in bytes per SMTP process |
 | `QMAIL_CONCURRENCY_INCOMING` | no | `20` | Max simultaneous inbound SMTP connections |
 | `QMAIL_CONCURRENCY_REMOTE` | no | `20` | Max simultaneous outbound deliveries |
 | `QMAIL_CONCURRENCY_LOCAL` | no | `10` | Max simultaneous local deliveries |
-| `QMAIL_SPFBEHAVIOR` | no | `3` | SPF check behavior (0=off, 3=reject fail, see docs) |
+| `QMAIL_DATABYTES` | no | `20000000` | Max message size in bytes |
+| `QMAIL_MAXRCPT` | no | `100` | Max recipients per message |
+| `QMAIL_SPFBEHAVIOR` | no | `3` | SPF enforcement: `0`=off, `1`=neutral, `2`=softfail, `3`=fail reject |
 | `QMAIL_GREETDELAY` | no | `5` | Seconds to delay SMTP greeting (anti-spam) |
-| `QMAIL_SURBL` | no | `0` | Enable SURBL URI filtering (0=off, 1=on) |
-| `QMAIL_TLS_CERT` | no | — | Path to TLS certificate PEM (full chain) |
+| `QMAIL_SURBL` | no | `0` | SURBL URI blocklist filtering (`0`=off, `1`=on) |
+
+### TLS certificates
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `QMAIL_TLS_CERT` | no | — | Path to TLS certificate PEM (full chain, e.g. Let's Encrypt `fullchain.pem`) |
 | `QMAIL_TLS_KEY` | no | — | Path to TLS private key PEM |
 | `QMAIL_DH_BITS` | no | `2048` | DH parameter bit size (`2048` or `4096`) |
-| `QMAIL_RELAY_NETS` | no | — | Comma-separated IPs/prefixes trusted to relay on port 25 (e.g. `"192.168.1.,10.0.0.2"`). Loopback is always trusted. |
-| `QMAIL_CHKUSER_WRONGRCPTLIMIT` | no | `3` | Max invalid recipients before disconnect, applied to all SMTP ports |
-| `VQADMIN_USER` | no | `admin` | vqadmin HTTP auth username |
-| `VQADMIN_PASS` | no | auto-generated | vqadmin HTTP auth password |
+| `QMAIL_SNI_CERTS` | no | — | Semicolon-separated `domain:cert:key` triplets for additional hosted domains (see SNI section) |
+
+### tcprules / relay policy
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `QMAIL_RELAY_NETS` | no | — | Comma-separated IPs/prefixes trusted to relay on port 25 (e.g. `"192.168.1.,10.0.0.2"`). Loopback always trusted. |
+| `QMAIL_CHKUSER_WRONGRCPTLIMIT` | no | `3` | Max invalid recipients before disconnect (all SMTP ports) |
+
+### Features
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `QMAIL_DUALSTACK` | no | `0` | Bind on `::` for IPv4+IPv6 dual-stack (`1`=on). Requires Docker IPv6 enabled. |
+| `QMAIL_GREYLISTING` | no | `0` | Enable jgreylist on port 25 (`1`=on) |
+| `QMAIL_TAPS` | no | — | Semicolon-separated tap rules `TYPE:REGEX:DEST` (`F`=from, `T`=to, `A`=all) |
+
+### Web admin
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `VQADMIN_USER` | no | `admin` | vqadmin HTTP basic auth username |
+| `VQADMIN_PASS` | no | auto-generated (printed to logs) | vqadmin HTTP basic auth password |
 
 ---
 
@@ -138,26 +201,30 @@ docker run --rm \
 | `80` | HTTP | qmailadmin web interface |
 | `110` | POP3 | Mail retrieval |
 | `143` | IMAP | Mail retrieval (Dovecot) |
-| `465` | SMTPS | SMTP over TLS |
-| `587` | Submission | Authenticated outbound (SMTPAUTH required) |
+| `465` | SMTPS | SMTP over implicit TLS |
+| `587` | Submission | Authenticated outbound (STARTTLS) |
 | `993` | IMAPS | IMAP over TLS (Dovecot) |
-| `995` | POP3S | POP3 over TLS |
+| `995` | POP3S | POP3 over TLS (Dovecot) |
+| `4190` | ManageSieve | Sieve script management (Dovecot) |
 
 ---
 
 ## Runit services
 
-The container runs six supervised services under `runsvdir`:
+The container runs seven supervised services under `runsvdir`:
 
 | Service | Port | Notes |
 |---|---|---|
-| `qmail-smtpd` | 25 | `chkuser`, SPF, SURBL, DKIM verify, greet delay |
-| `qmail-send` | — | Queue manager; enables DKIM signing if `control/filterargs` exists |
+| `qmail-smtpd` | 25 | `chkuser`, SPF, SURBL, DKIM verify, greet delay, optional jgreylist |
+| `qmail-send` | — | Queue manager; DKIM signing via `control/filterargs` |
 | `qmail-submission` | 587 | Auth required (`SMTPAUTH=!`), STARTTLS |
-| `qmail-smtps` | 465 | Auth required, implicit TLS via `sslserver` |
-| `dovecot` | 110 / 143 / 993 / 995 | POP3, IMAP, IMAPS, POP3S — Maildir via vpopmail domains, `vchkpw` auth. Pinned to 2.3.x (Dovecot 2.4 removed the `checkpassword` driver) |
-| `lighttpd` | 80 | Web server for qmailadmin CGI interface |
-| `vusaged` | — | vpopmail quota usage cache daemon — reduces filesystem `stat()` calls on delivery |
+| `qmail-smtps` | 465 | Auth required, implicit TLS via `sslserver` (ucspi-ssl) |
+| `dovecot` | 110 / 143 / 993 / 995 / 4190 | POP3(S), IMAP(S), ManageSieve — `vchkpw` auth, Sieve filtering. Pinned to 2.3.x (2.4 removed `checkpassword`) |
+| `lighttpd` | 80 | qmailadmin + vqadmin CGI interface |
+| `vusaged` | — | vpopmail quota usage cache — reduces `stat()` calls on every delivery |
+
+Ports 25, 587, and 465 use **ucspi-tcp6** (`tcpserver`) for network listening,
+enabling optional IPv6 dual-stack via `QMAIL_DUALSTACK=1`.
 
 Logs are written via `svlogd` to `/var/log/qmail/<service>/`.
 
