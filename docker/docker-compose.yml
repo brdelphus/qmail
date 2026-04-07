@@ -22,6 +22,8 @@ services:
       # QMAIL_DATABYTES: 20000000
       # QMAIL_MAXRCPT: 100
       # QMAIL_SPFBEHAVIOR: 3
+      # QMAIL_GREETDELAY: 5
+      # QMAIL_SURBL: 0
       # TLS — provide paths to existing cert/key files (e.g. Let's Encrypt).
       # Both files must be accessible inside the container (mount via volume).
       # If omitted, a self-signed cert is generated on first run.

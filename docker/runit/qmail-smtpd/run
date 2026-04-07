@@ -8,10 +8,14 @@ LOCAL=$(head -1 $QMAILDIR/control/me)
 TCPRULES_DIR=$QMAILDIR/control
 
 export CHKUSER_START=ALWAYS
-export SMTPD_GREETDELAY=5
-export DROP_PRE_GREET=1
 export FORCEAUTHMAILFROM=1
-export SURBL=0
+
+# Greetdelay — configurable via control/greetdelay (default: 5)
+export SMTPD_GREETDELAY=$(cat $QMAILDIR/control/greetdelay 2>/dev/null || echo 5)
+export DROP_PRE_GREET=1
+
+# SURBL — configurable via control/surbl (default: 0 = disabled)
+export SURBL=$(cat $QMAILDIR/control/surbl 2>/dev/null || echo 0)
 
 # DKIM verification for inbound mail
 export QMAILQUEUE=$QMAILDIR/bin/qmail-dkim

@@ -111,17 +111,20 @@ docker run --rm \
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| Variable | Required | Default | Description |
-|---|---|---|---|
 | `QMAIL_ME` | yes | — | FQDN of this server (`mail.example.com`) |
 | `QMAIL_DOMAIN` | no | derived from `QMAIL_ME` | Primary virtual domain, created in vpopmail on first run |
 | `QMAIL_SOFTLIMIT` | no | `64000000` | Memory limit (bytes) per SMTP process |
 | `QMAIL_CONCURRENCY_INCOMING` | no | `20` | Max simultaneous inbound SMTP connections |
 | `QMAIL_CONCURRENCY_REMOTE` | no | `20` | Max simultaneous outbound deliveries |
 | `QMAIL_CONCURRENCY_LOCAL` | no | `10` | Max simultaneous local deliveries |
-| `QMAIL_TLS_CERT` | no | — | Path to TLS certificate PEM (full chain). Must be accessible inside the container |
-| `QMAIL_TLS_KEY` | no | — | Path to TLS private key PEM. Must be set together with `QMAIL_TLS_CERT` |
+| `QMAIL_SPFBEHAVIOR` | no | `3` | SPF check behavior (0=off, 3=reject fail, see docs) |
+| `QMAIL_GREETDELAY` | no | `5` | Seconds to delay SMTP greeting (anti-spam) |
+| `QMAIL_SURBL` | no | `0` | Enable SURBL URI filtering (0=off, 1=on) |
+| `QMAIL_TLS_CERT` | no | — | Path to TLS certificate PEM (full chain) |
+| `QMAIL_TLS_KEY` | no | — | Path to TLS private key PEM |
 | `QMAIL_DH_BITS` | no | `2048` | DH parameter bit size (`2048` or `4096`) |
+| `VQADMIN_USER` | no | `admin` | vqadmin HTTP auth username |
+| `VQADMIN_PASS` | no | auto-generated | vqadmin HTTP auth password |
 
 ---
 

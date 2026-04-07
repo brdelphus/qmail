@@ -79,6 +79,12 @@ if [ ! -f "$CONTROL/me" ]; then
     printf '%s' "$QMAIL_SPFBEHAVIOR"         > "$CONTROL/spfbehavior"
     printf '%s' "272800"                     > "$CONTROL/queuelifetime"
 
+    # Greetdelay and SURBL — configurable via env vars
+    QMAIL_GREETDELAY=${QMAIL_GREETDELAY:-5}
+    QMAIL_SURBL=${QMAIL_SURBL:-0}
+    printf '%s' "$QMAIL_GREETDELAY"          > "$CONTROL/greetdelay"
+    printf '%s' "$QMAIL_SURBL"               > "$CONTROL/surbl"
+
     printf '|/var/qmail/bin/vdelivermail '"''"' delete\n' \
         > "$CONTROL/defaultdelivery"
 
