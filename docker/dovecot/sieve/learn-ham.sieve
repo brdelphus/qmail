@@ -10,5 +10,5 @@ if allof(
     if environment :matches "imap.user" "*" {
         set "username" "${1}";
     }
-    pipe :copy :args ["${username}"] "learn-ham.sh";
+    pipe :copy "learn-ham.sh" ["${username}"];
 }

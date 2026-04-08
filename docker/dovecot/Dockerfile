@@ -2,6 +2,9 @@
 # Separate from qmail; authenticates directly against MariaDB vpopmail schema.
 FROM debian:bookworm-slim
 
+# Suppress debconf frontend warnings — no TTY available in Docker builds
+ENV DEBIAN_FRONTEND=noninteractive
+
 # Pin Dovecot to 2.3.x — Dovecot 2.4 changed some configuration options
 RUN printf 'Package: dovecot-*\nPin: version 1:2.3.*\nPin-Priority: 1001\n' \
         > /etc/apt/preferences.d/dovecot-23

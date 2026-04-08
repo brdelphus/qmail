@@ -1,7 +1,8 @@
 FROM python:3.12-slim
 
 ARG OLETOOLS_VERSION=0.60.1
-ARG OLEFY_VERSION=1.2
+# Pin to a specific commit — olefy has no releases/tags
+ARG OLEFY_COMMIT=e9e593bf29799e3f61023125cbfd5cd3c1338cf4
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends wget netcat-openbsd \
@@ -13,7 +14,7 @@ RUN python -m venv /opt/olefy \
 
 # Download olefy — the TCP daemon that wraps olevba for rspamd
 RUN wget -qO /opt/olefy/bin/olefy.py \
-        "https://raw.githubusercontent.com/HeinleinSupport/olefy/v${OLEFY_VERSION}/olefy.py" \
+        "https://raw.githubusercontent.com/HeinleinSupport/olefy/${OLEFY_COMMIT}/olefy.py" \
  && chmod 755 /opt/olefy/bin/olefy.py
 
 # Unprivileged user — no home, no shell

@@ -7,5 +7,5 @@ if environment :matches "imap.cause" "COPY" {
     if environment :matches "imap.user" "*" {
         set "username" "${1}";
     }
-    pipe :copy :args ["${username}"] "learn-spam.sh";
+    pipe :copy "learn-spam.sh" ["${username}"];
 }
