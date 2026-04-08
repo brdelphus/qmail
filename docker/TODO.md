@@ -215,6 +215,42 @@ simscan → rspamd :11333
 
 ---
 
+## Step 8 — Oletools / olefy (Office macro scanning via rspamd external_services)
+
+[olefy](https://github.com/HeinleinSupport/olefy) is a TCP daemon wrapping
+`olevba` from [oletools](https://github.com/decalage2/oletools). rspamd connects
+to it via the `external_services` module — same pattern as ClamAV. Detects
+malicious VBA macros, auto-exec routines, and VBA stomping in Office attachments
+(doc, docx, xls, xlsx, ppt, pptx).
+
+```
+simscan → rspamd :11333
+              └── Office attachment
+                    └── TCP → olefy :11343 → olevba → macro analysis
+                                                         └── OLETOOLS_* symbols
+                                                               └── composite score → reject
+```
+
+**Detection logic (from Mailu):**
+
+| Composite | Expression | Score | Action |
+|---|---|---|---|
+| `OLETOOLS_MACRO_MRAPTOR` | `(A & W) \| (A & X) \| (W & X)` | 20.0 | reject |
+| `OLETOOLS_MACRO_SUSPICIOUS` | `FLAG \| VBASTOMP \| A` | 20.0 | reject |
+| `OLETOOLS_FAIL` | scan error | — | soft reject |
+
+- [ ] Add `oletools` container running olefy (port 11343, internal only)
+- [ ] Build custom image: install `oletools` via pip into a venv, download + verify olefy.py
+- [ ] Run as unprivileged user; use `/dev/shm` for temp files (`OLEFY_TMPDIR`)
+- [ ] Add healthcheck (`nc -z localhost 11343`)
+- [ ] Add `docker/rspamd/local.d/external_services.conf` — oletools block with mime type + extension filters
+- [ ] Add `docker/rspamd/local.d/composites.conf` — `OLETOOLS_MACRO_MRAPTOR` + `OLETOOLS_MACRO_SUSPICIOUS`
+- [ ] Add `docker/rspamd/local.d/force_actions.conf` — reject on `OLETOOLS_MACRO_MRAPTOR | OLETOOLS_MACRO_SUSPICIOUS`; soft reject on `OLETOOLS_FAIL`
+- [ ] Wire `rspamd depends_on: oletools` in compose
+- [ ] `SCAN_MACROS` env var toggle (skip oletools block when disabled)
+
+---
+
 ## Final compose stack
 
 ```
@@ -225,4 +261,5 @@ clamav       — clamd antivirus                                  port:  3310  (
 rspamd       — spam filtering, DKIM verify, DMARC, RBL          port:  11334 (web UI)
 redis        — Rspamd Bayes + fuzzy state                       port:  6379  (internal)
 tika         — attachment text extraction for rspamd            port:  9998  (internal)
+oletools     — Office macro scanning via olefy/olevba           port:  11343 (internal)
 ```
