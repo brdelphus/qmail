@@ -4,7 +4,7 @@ Containerised build of [sagredo-dev/qmail](https://github.com/sagredo-dev/qmail)
 a heavily patched netqmail-1.06 with TLS, DKIM, SPF, SRS, SMTP AUTH, chkuser,
 SURBL, greylisting, simscan and more — running under **runit** on **Debian bookworm-slim**.
 
-The compose stack runs six containers:
+The compose stack runs seven containers:
 
 | Container | Role | Ports |
 |---|---|---|
@@ -14,6 +14,7 @@ The compose stack runs six containers:
 | **clamav** | `clamd` + `freshclam` antivirus (called by rspamd) | internal :3310 |
 | **rspamd** | Spam filtering, antivirus, DKIM verify, DMARC, RBL, Bayes | :11334 (web UI) |
 | **redis** | Rspamd Bayes + fuzzy state | internal |
+| **tika** | Attachment text extraction for rspamd (PDF, DOCX, XLSX, …) | internal :9998 |
 
 ---
 
@@ -851,6 +852,32 @@ container. Files present:
 | `classifier-bayes.conf` | Bayes with Redis + autolearn |
 | `greylist.conf` | Greylisting disabled (qmail-spp handles it) |
 | `dkim_signing.conf` | DKIM signing disabled (qmail-dkim handles it) |
+| `tika.conf` | Apache Tika URL + timeout + MIME type filter for attachment extraction |
+
+---
+
+## Tika (attachment text extraction)
+
+[Apache Tika](https://tika.apache.org) runs as a server and extracts plain text
+from binary attachments. rspamd submits attachments over HTTP and applies spam
+rules and the Bayes classifier to the extracted content, catching payloads hidden
+inside documents that would otherwise be opaque.
+
+```
+rspamd :11333
+  └── attachment (PDF/DOCX/XLSX/…)
+        └── HTTP → tika :9998 → extracted text
+                                  └── rspamd rules / Bayes
+```
+
+Tika is optional — if the container is not reachable, rspamd skips extraction
+silently. Port 9998 is internal only.
+
+### Tika env vars
+
+| Variable | Default | Description |
+|---|---|---|
+| `TIKA_JAVA_OPTS` | `-Xms128m -Xmx512m` | JVM heap settings — increase `-Xmx` if Tika OOMs on large attachments |
 
 ---
 

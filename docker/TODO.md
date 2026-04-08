@@ -192,7 +192,7 @@ User moves message out of Junk/Spam (not to Trash)
 
 ---
 
-## Step 7 — Tika (attachment text extraction for rspamd)
+## ✅ Step 7 — Tika (attachment text extraction for rspamd)
 
 [Apache Tika](https://tika.apache.org) runs as a server and extracts plain text
 from binary attachments (PDF, DOCX, XLSX, etc.). rspamd has built-in Tika
@@ -207,11 +207,11 @@ simscan → rspamd :11333
                                               └── rspamd rules / Bayes
 ```
 
-- [ ] Add `apache/tika` container to `docker-compose.yml` (port 9998, internal only)
-- [ ] Add `docker/rspamd/local.d/tika.conf`: `url = "http://tika:9998";`
-- [ ] Add healthcheck for tika container
-- [ ] Wire `tika` into rspamd `depends_on` (or let rspamd connect lazily on first use)
-- [ ] Document `TIKA_*` env vars if any tuning is needed (heap size, timeout)
+- [x] Add `apache/tika` container to `docker-compose.yml` (port 9998, internal only)
+- [x] Add `docker/rspamd/local.d/tika.conf`: `url = "http://tika:9998";` with mime type filter
+- [x] Add healthcheck for tika container (`wget` against `/tika` endpoint)
+- [x] Wire `tika` into rspamd `depends_on` (`service_started` — rspamd connects lazily)
+- [x] `TIKA_JAVA_OPTS` env var for JVM heap tuning (default: `-Xms128m -Xmx512m`)
 
 ---
 

@@ -216,6 +216,20 @@ services:
       timeout: 5s
       retries: 5
 
+  tika:
+    image: apache/tika:latest
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9998/tika"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    environment:
+      # JVM heap — increase if Tika OOMs on large attachments
+      JAVA_OPTS: ${TIKA_JAVA_OPTS:--Xms128m -Xmx512m}
+    # port 9998 is internal only — rspamd connects over the compose network
+
   rspamd:
     image: rspamd/rspamd:latest
     restart: unless-stopped
@@ -224,6 +238,8 @@ services:
         condition: service_healthy
       clamav:
         condition: service_started   # service_healthy would block for ~5 min (definition load)
+      tika:
+        condition: service_started   # rspamd connects lazily; no need to wait for healthy
     environment:
       # Web UI password — generate hash with: docker compose exec rspamd rspamadm pw
       # Then replace this with the $2$... hash in rspamd/local.d/worker-controller.inc
