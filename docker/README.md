@@ -2,7 +2,10 @@
 
 Containerised build of [sagredo-dev/qmail](https://github.com/sagredo-dev/qmail) —
 a heavily patched netqmail-1.06 with TLS, DKIM, SPF, SRS, SMTP AUTH, chkuser,
-SURBL and more — running under **runit** on **Debian bookworm-slim**.
+SURBL, greylisting and more — running under **runit** on **Debian bookworm-slim**.
+
+The compose stack runs two containers: **qmail** (MTA) and **mariadb** (vpopmail
+auth backend). Dovecot, ClamAV, Rspamd, and Redis are planned — see `TODO.md`.
 
 ---
 
@@ -13,7 +16,8 @@ previous one being installed:
 
 ```
 fehQlibs → ucspi-tcp6 → ucspi-ssl → libsrs2 → netqmail → vpopmail → autorespond
-         → patched qmail → jgreylist → ezmlm-idx → qmailadmin → vqadmin
+         → patched qmail → jgreylist → spp-greylisting + ifauthskip
+         → ezmlm-idx → qmailadmin → vqadmin
 ```
 
 | Step | Why it must come first |
@@ -27,6 +31,7 @@ fehQlibs → ucspi-tcp6 → ucspi-ssl → libsrs2 → netqmail → vpopmail → 
 | **autorespond** | vacation responder required by qmailadmin |
 | **patched qmail** | overwrites netqmail binaries |
 | **jgreylist** | file-based greylisting wrapper compiled into `/var/qmail/bin/` |
+| **spp-greylisting + ifauthskip** | MySQL-backed greylisting plugin + auth-skip plugin compiled into `/var/qmail/plugins/` |
 | **ezmlm-idx** | mailing list manager, used by qmailadmin |
 | **qmailadmin** | web UI for domain/user management |
 | **vqadmin** | system-level domain admin |
@@ -35,25 +40,23 @@ fehQlibs → ucspi-tcp6 → ucspi-ssl → libsrs2 → netqmail → vpopmail → 
 
 ## Quick start
 
-### Minimum required configuration
+### 1. Configure credentials
 
-Edit `docker/docker-compose.yml` and set at least these two variables before
-starting:
+Copy the example env file and set at minimum the MariaDB passwords and your
+server's FQDN:
 
-```yaml
-environment:
-  QMAIL_ME: mail.example.com      # FQDN of this server (required)
-  QMAIL_DOMAIN: example.com       # primary virtual domain (required)
+```sh
+cp docker/.env.example docker/.env
+$EDITOR docker/.env
 ```
 
-Everything else has a working default. On first run the entrypoint will:
-- Write all qmail control files
-- Generate a self-signed TLS cert for `QMAIL_ME` (replace with Let's Encrypt — see TLS section)
-- Generate DKIM keys for `QMAIL_DOMAIN`
-- Create the primary vpopmail domain
-- Set up tcprules CDB files
+The only truly required change is `QMAIL_ME`. You should also set strong
+passwords for `MYSQL_PASS`, `MYSQL_ROOT_PASS`, and `MYSQL_PASS`.
 
-### Build and start
+### 2. Build and start
+
+The image builds cleanly on `debian:bookworm-slim`. Full build time is roughly
+5–10 minutes on first run (all sources downloaded and compiled from scratch).
 
 ```sh
 git clone https://github.com/brdelphus/qmail
@@ -64,7 +67,15 @@ docker compose -f docker/docker-compose.yml up -d
 docker compose -f docker/docker-compose.yml logs -f
 ```
 
-### Add the first mail user
+On first run the entrypoint will:
+- Write all qmail control files from env vars
+- Write `vpopmail/etc/vpopmail.mysql` for MariaDB auth
+- Generate a self-signed TLS cert for `QMAIL_ME` (replace with Let's Encrypt — see TLS section)
+- Generate DKIM keys for `QMAIL_DOMAIN`
+- Create the primary vpopmail domain
+- Set up tcprules CDB files
+
+### 3. Add the first mail user
 
 ```sh
 docker compose -f docker/docker-compose.yml exec qmail \
@@ -85,111 +96,205 @@ docker compose -f docker/docker-compose.yml exec qmail \
 ## vpopmail auth backend
 
 vpopmail is compiled with a single auth backend selected at build time.
-The default is **CDB** (file-based, no external database required).
+The compose file defaults to **MySQL** (MariaDB). The Dockerfile accepts any backend:
 
 | Backend | Build arg | Extra runtime dependency |
 |---|---|---|
-| `cdb` *(default)* | *(none)* | *(none)* |
-| `mysql` | `VPOPMAIL_AUTH=mysql` | MySQL / MariaDB server |
+| `mysql` *(default)* | `VPOPMAIL_AUTH=mysql` | MariaDB / MySQL server |
+| `cdb` | `VPOPMAIL_AUTH=cdb` | *(none)* |
 | `pgsql` | `VPOPMAIL_AUTH=pgsql` | PostgreSQL server |
 | `ldap` | `VPOPMAIL_AUTH=ldap` | LDAP server |
 | `passwd` | `VPOPMAIL_AUTH=passwd` | *(none)* |
 
-All client dev libraries (`libmysqlclient-dev`, `libpq-dev`, `libldap-dev`) are
-installed in the builder stage so you can switch backends without modifying the
-Dockerfile — just rebuild with a different arg:
+All client dev libraries are installed in the builder stage. To switch backends,
+rebuild with a different arg (and remove the `mariadb` service if not using MySQL):
 
 ```sh
 docker compose -f docker/docker-compose.yml build \
-    --build-arg VPOPMAIL_AUTH=mysql
+    --build-arg VPOPMAIL_AUTH=cdb
 ```
+
+> **Debian note:** the MySQL backend requires `--enable-libdir` pointing at the
+> multiarch lib path (`/usr/lib/x86_64-linux-gnu` on amd64). The Dockerfile
+> derives this automatically via `dpkg-architecture -qDEB_HOST_MULTIARCH`.
+
+### vpopmail.mysql
+
+When `MYSQL_HOST` is set, the entrypoint writes
+`/home/vpopmail/etc/vpopmail.mysql` on every startup:
+
+```
+host|port|user|password|database
+```
+
+This file is re-written on every container start so credential changes take
+effect without rebuilding.
+
+---
+
+## MariaDB
+
+The `mariadb` service is a prerequisite for the qmail container — qmail's
+`depends_on` waits for the MariaDB healthcheck to pass before starting.
+
+### Databases
+
+| Database | User | Purpose |
+|---|---|---|
+| `vpopmail` | `vpopmail` | Domain/user/password/quota data for vpopmail, chkuser, qmailadmin, vqadmin |
+| `greylisting` | `greylisting` | Triplet state for the qmail-spp greylisting plugin |
+
+Both are created automatically on the first MariaDB start via scripts in
+`docker/mariadb-init/`:
+
+- `01-greylisting.sh` — creates the `greylisting` DB, user, and table schema
+
+### Credentials
+
+Set in `.env` (shared between the `mariadb` and `qmail` services):
+
+```
+MYSQL_ROOT_PASS=changeme_root
+MYSQL_DB=vpopmail
+MYSQL_USER=vpopmail
+MYSQL_PASS=changeme
+```
+
+> **Important:** change all passwords before the first run — they are baked
+> into the database volume and cannot be changed by simply editing `.env` after
+> the volume has been initialised.
 
 ---
 
 ## Persistent volume
 
-All mutable data lives under a **single named volume** (`maildata`) mounted at
-`/srv/mail`. On first run the entrypoint seeds each subdirectory from the
-image defaults and replaces the original paths with symlinks.
+All mutable data lives under **named volumes** mounted at fixed paths.
+On first run the entrypoint seeds each subdirectory from the image defaults
+and replaces the original paths with symlinks.
 
 | Volume path | Symlinked from | Contents |
 |---|---|---|
 | `/srv/mail/qmail/control` | `/var/qmail/control` | Control files, TLS certs, DKIM keys, tcprules CDBs, Sieve globals |
-| `/srv/mail/qmail/queue` | `/var/qmail/queue` | Mail queue — must be on a synchronous filesystem |
-| `/srv/mail/jgreylist` | `/var/qmail/jgreylist` | Greylist state files (only used when `QMAIL_GREYLISTING=1`) |
+| `/srv/mail/qmail/queue` | `/var/qmail/queue` | Mail queue |
+| `/srv/mail/qmail/overlimit` | `/var/qmail/overlimit` | Per-user send-rate counters (rcptcheck-overlimit) |
+| `/srv/mail/jgreylist` | `/var/qmail/jgreylist` | jgreylist state files |
 | `/srv/mail/vpopmail/domains` | `/home/vpopmail/domains` | Virtual domain mailboxes (Maildir) |
 | `/srv/mail/vpopmail/etc` | `/home/vpopmail/etc` | vpopmail config and DB connection strings |
+| *(mariadb_data)* | `/var/lib/mysql` | MariaDB data directory |
 
 ### Backup
 
 ```sh
+# qmail volume
 docker run --rm \
     -v maildata:/srv/mail \
     -v $(pwd):/backup \
     debian:bookworm-slim \
     tar czf /backup/maildata-$(date +%F).tar.gz /srv/mail
-```
 
-### Restore
-
-```sh
-docker run --rm \
-    -v maildata:/srv/mail \
-    -v $(pwd):/backup \
-    debian:bookworm-slim \
-    tar xzf /backup/maildata-<date>.tar.gz -C /
+# MariaDB
+docker compose -f docker/docker-compose.yml exec mariadb \
+    mariadb-dump -u root -p"$MYSQL_ROOT_PASS" --all-databases \
+    > backup-$(date +%F).sql
 ```
 
 ---
 
 ## Environment variables
 
-### Core (first-run, written to control files)
+All variables can be set in `docker/.env` — Docker Compose loads it
+automatically. See `.env.example` for a fully commented reference.
 
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `QMAIL_ME` | **yes** | — | FQDN of this server (`mail.example.com`) |
-| `QMAIL_DOMAIN` | no | derived from `QMAIL_ME` | Primary virtual domain, created in vpopmail on first run |
-| `QMAIL_SOFTLIMIT` | no | `64000000` | Memory limit in bytes per SMTP process |
-| `QMAIL_CONCURRENCY_INCOMING` | no | `20` | Max simultaneous inbound SMTP connections |
-| `QMAIL_CONCURRENCY_REMOTE` | no | `20` | Max simultaneous outbound deliveries |
-| `QMAIL_CONCURRENCY_LOCAL` | no | `10` | Max simultaneous local deliveries |
-| `QMAIL_DATABYTES` | no | `20000000` | Max message size in bytes |
-| `QMAIL_MAXRCPT` | no | `100` | Max recipients per message |
-| `QMAIL_SPFBEHAVIOR` | no | `3` | SPF enforcement: `0`=off, `1`=neutral, `2`=softfail, `3`=fail reject |
-| `QMAIL_GREETDELAY` | no | `5` | Seconds to delay SMTP greeting (anti-spam) |
-| `QMAIL_SURBL` | no | `0` | SURBL URI blocklist filtering (`0`=off, `1`=on) |
+### Server identity
 
-### TLS certificates
+| Variable | Default | Description |
+|---|---|---|
+| `QMAIL_ME` | **required** | FQDN of this server (`mail.example.com`) |
+| `QMAIL_DOMAIN` | derived from `QMAIL_ME` | Primary virtual domain, created in vpopmail on first run |
 
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `QMAIL_TLS_CERT` | no | — | Path to TLS certificate PEM (full chain, e.g. Let's Encrypt `fullchain.pem`) |
-| `QMAIL_TLS_KEY` | no | — | Path to TLS private key PEM |
-| `QMAIL_DH_BITS` | no | `2048` | DH parameter bit size (`2048` or `4096`) |
-| `QMAIL_SNI_CERTS` | no | — | Semicolon-separated `domain:cert:key` triplets for additional hosted domains (see SNI section) |
+### MariaDB
 
-### tcprules / relay policy
+| Variable | Default | Description |
+|---|---|---|
+| `MYSQL_HOST` | `mariadb` | MariaDB hostname (service name — do not change) |
+| `MYSQL_PORT` | `3306` | MariaDB port |
+| `MYSQL_DB` | `vpopmail` | vpopmail database name |
+| `MYSQL_USER` | `vpopmail` | vpopmail database user |
+| `MYSQL_PASS` | `changeme` | vpopmail database password |
+| `MYSQL_ROOT_PASS` | `changeme_root` | MariaDB root password |
 
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `QMAIL_RELAY_NETS` | no | — | Comma-separated IPs/prefixes trusted to relay on port 25 (e.g. `"192.168.1.,10.0.0.2"`). Loopback always trusted. |
-| `QMAIL_CHKUSER_WRONGRCPTLIMIT` | no | `3` | Max invalid recipients before disconnect (all SMTP ports) |
+### Queue / concurrency
 
-### Features
+| Variable | Default | Description |
+|---|---|---|
+| `QMAIL_SOFTLIMIT` | `64000000` | Memory limit in bytes per SMTP process |
+| `QMAIL_CONCURRENCY_INCOMING` | `200` | Max simultaneous inbound SMTP connections |
+| `QMAIL_CONCURRENCY_REMOTE` | `20` | Max simultaneous outbound deliveries |
+| `QMAIL_CONCURRENCY_LOCAL` | `10` | Max simultaneous local deliveries |
+| `QMAIL_DATABYTES` | `20000000` | Max message size in bytes (`0`=unlimited) |
+| `QMAIL_MAXRCPT` | `100` | Max recipients per message |
+| `QMAIL_QUEUELIFETIME` | `272800` | Seconds a message stays in queue before bouncing (~3 days) |
 
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `QMAIL_DUALSTACK` | no | `0` | Bind on `::` for IPv4+IPv6 dual-stack (`1`=on). Requires Docker IPv6 enabled. |
-| `QMAIL_GREYLISTING` | no | `0` | Enable jgreylist on port 25 (`1`=on) |
-| `QMAIL_TAPS` | no | — | Semicolon-separated tap rules `TYPE:REGEX:DEST` (`F`=from, `T`=to, `A`=all) |
+### SMTP behaviour
+
+| Variable | Default | Description |
+|---|---|---|
+| `QMAIL_SPFBEHAVIOR` | `3` | SPF: `0`=off, `1`=neutral, `2`=softfail, `3`=fail→reject |
+| `QMAIL_GREETDELAY` | `5` | Seconds to delay SMTP greeting (anti-spam) |
+| `QMAIL_SURBL` | `0` | SURBL URI blocklist filtering (`0`=off, `1`=on) |
+| `QMAIL_CHKUSER_WRONGRCPTLIMIT` | `3` | Max invalid recipients before disconnect (all ports) |
+| `QMAIL_BRTLIMIT` | `2` | Max non-existent recipients before disconnect (brtlimit patch) |
+| `QMAIL_BOUNCEFROM` | `noreply` | Envelope sender name for bounce messages |
+| `QMAIL_RELAY_LIMIT` | `1000` | Max messages an auth user/domain/IP may send per period (`0`=unlimited) |
+| `QMAIL_DUALSTACK` | `0` | Bind on `::` for IPv4+IPv6 dual-stack (`1`=on, requires Docker IPv6) |
+| `QMAIL_GREYLISTING` | `0` | Enable jgreylist binary wrapper on port 25 (`1`=on) |
+| `QMAIL_SPF_EXP` | — | Custom SPF failure explanation message (optional) |
+
+### SMTP run-script env vars (passed to qmail-smtpd)
+
+| Variable | Default | Description |
+|---|---|---|
+| `UNSIGNED_SUBJECT` | `1` | Allow DKIM-signed mail where Subject is absent from `h=` tag |
+| `HELO_DNS_CHECK` | — | HELO hostname DNS validation modes (e.g. `PLRIV`) |
+| `REJECTNULLSENDERS` | — | Reject messages with empty envelope sender (`<>`) when set |
+| `SIMSCAN_DEBUG` | — | simscan debug level `0`–`4` (requires simscan — Step 5 in TODO.md) |
+
+### TLS
+
+| Variable | Default | Description |
+|---|---|---|
+| `QMAIL_TLS_CERT` | — | Path to TLS certificate PEM (e.g. Let's Encrypt `fullchain.pem`) |
+| `QMAIL_TLS_KEY` | — | Path to TLS private key PEM |
+| `QMAIL_DH_BITS` | `2048` | DH parameter bit size (`2048` or `4096`) |
+| `QMAIL_TLS_CIPHERS` | `HIGH:MEDIUM:!MD5:!RC4:!3DES:!LOW:!SSLv2:!SSLv3` | Allowed TLS cipher suite |
+| `QMAIL_SNI_CERTS` | — | Semicolon-separated `domain:cert:key` triplets for SNI (see TLS section) |
+
+### Relay / access control
+
+| Variable | Default | Description |
+|---|---|---|
+| `QMAIL_RELAY_NETS` | — | Comma-separated IPs/prefixes trusted to relay on port 25 |
+| `QMAIL_TAPS` | — | Semicolon-separated tap rules `TYPE:REGEX:DEST` (`F`=from, `T`=to, `A`=all) |
+
+### qmail-spp greylisting plugin
+
+| Variable | Default | Description |
+|---|---|---|
+| `GREYLIST_USER` | — | Database user — **set this to enable the plugin** |
+| `GREYLIST_PASS` | `changeme_grey` | Database password |
+| `GREYLIST_DB` | `greylisting` | Database name |
+| `GREYLIST_HOST` | `mariadb` | Database host |
+| `GREYLIST_BLOCK_EXPIRE` | `2` | Minutes a new sender is greylisted |
+| `GREYLIST_RECORD_EXPIRE` | `2000` | Minutes until an unseen triplet is purged |
+| `GREYLIST_RECORD_EXPIRE_GOOD` | `36` | Hours a good sender stays whitelisted |
+| `GREYLIST_LOGLEVEL` | `4` | Plugin log verbosity |
 
 ### Web admin
 
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `VQADMIN_USER` | no | `admin` | vqadmin HTTP basic auth username |
-| `VQADMIN_PASS` | no | auto-generated (printed to logs) | vqadmin HTTP basic auth password |
+| Variable | Default | Description |
+|---|---|---|
+| `VQADMIN_USER` | `admin` | vqadmin HTTP basic auth username |
+| `VQADMIN_PASS` | auto-generated | vqadmin password — printed to logs on first run if not set |
 
 ---
 
@@ -202,7 +307,7 @@ docker run --rm \
 | `110` | POP3 | Mail retrieval |
 | `143` | IMAP | Mail retrieval (Dovecot) |
 | `465` | SMTPS | SMTP over implicit TLS |
-| `587` | Submission | Authenticated outbound (STARTTLS) |
+| `587` | Submission | Authenticated outbound (STARTTLS required) |
 | `993` | IMAPS | IMAP over TLS (Dovecot) |
 | `995` | POP3S | POP3 over TLS (Dovecot) |
 | `4190` | ManageSieve | Sieve script management (Dovecot) |
@@ -215,20 +320,15 @@ The container runs seven supervised services under `runsvdir`:
 
 | Service | Port | Notes |
 |---|---|---|
-| `qmail-smtpd` | 25 | `chkuser`, SPF, SURBL, DKIM verify, greet delay, optional jgreylist |
+| `qmail-smtpd` | 25 | chkuser, SPF, SURBL, DKIM verify, greet delay, optional jgreylist + spp greylisting |
 | `qmail-send` | — | Queue manager; DKIM signing via `control/filterargs` |
-| `qmail-submission` | 587 | Auth required (`SMTPAUTH=!`), STARTTLS |
-| `qmail-smtps` | 465 | Auth required, implicit TLS via `sslserver` (ucspi-ssl) |
-| `dovecot` | 110 / 143 / 993 / 995 / 4190 | POP3(S), IMAP(S), ManageSieve — `vchkpw` auth, Sieve filtering. Pinned to 2.3.x (2.4 removed `checkpassword`) |
-| `lighttpd` | 80 | qmailadmin + vqadmin CGI interface |
-| `vusaged` | — | vpopmail quota usage cache — reduces `stat()` calls on every delivery |
-
-Ports 25, 587, and 465 use **ucspi-tcp6** (`tcpserver`) for network listening,
-enabling optional IPv6 dual-stack via `QMAIL_DUALSTACK=1`.
+| `qmail-submission` | 587 | Auth required (`SMTPAUTH=!`), `FORCETLS=1`, rate limiting |
+| `qmail-smtps` | 465 | Auth required, implicit TLS via `sslserver`, rate limiting |
+| `dovecot` | 110/143/993/995/4190 | POP3(S), IMAP(S), ManageSieve — `vchkpw` auth, Sieve filtering. Pinned to 2.3.x |
+| `lighttpd` | 80 | qmailadmin + vqadmin CGI |
+| `vusaged` | — | vpopmail quota usage daemon |
 
 Logs are written via `svlogd` to `/var/log/qmail/<service>/`.
-
-### Check service status
 
 ```sh
 docker compose -f docker/docker-compose.yml exec qmail \
@@ -239,21 +339,17 @@ docker compose -f docker/docker-compose.yml exec qmail \
 
 ## TLS certificates
 
-Both qmail (`sslserver`) and Dovecot read a single combined PEM file at
+Both qmail (`sslserver`) and Dovecot read a combined PEM at
 `/var/qmail/control/servercert.pem` (certificate block first, then private key).
 DH parameters are stored at `/var/qmail/control/dh4096.pem`.
-
-The entrypoint resolves the cert on every first-run using this priority:
 
 | Priority | Condition | Result |
 |---|---|---|
 | 1 | `QMAIL_TLS_CERT` + `QMAIL_TLS_KEY` set | Combines the two files into `servercert.pem` |
-| 2 | `servercert.pem` already exists in volume | Used as-is (e.g. placed there manually) |
+| 2 | `servercert.pem` already in volume | Used as-is |
 | 3 | Neither | Self-signed cert generated for `QMAIL_ME` |
 
-### Using Let's Encrypt
-
-Mount the certbot volume and set the env vars in `docker-compose.yml`:
+### Let's Encrypt
 
 ```yaml
 environment:
@@ -264,59 +360,110 @@ volumes:
   - maildata:/srv/mail
 ```
 
-On cert renewal, restart the container to re-combine the PEM:
+On cert renewal, restart to re-combine the PEM:
 
 ```sh
-docker compose -f docker/docker-compose.yml restart
-```
-
-### Manual cert replacement
-
-```sh
-cat fullchain.pem privkey.pem > /var/lib/docker/volumes/maildata/_data/qmail/control/servercert.pem
-chmod 600 /var/lib/docker/volumes/maildata/_data/qmail/control/servercert.pem
-docker compose -f docker/docker-compose.yml restart
+docker compose -f docker/docker-compose.yml restart qmail
 ```
 
 ### SNI — multiple domains
 
-SNI (Server Name Indication) lets the server present different certificates
-depending on which hostname the client requests during the TLS handshake.
-Both qmail and Dovecot support it.
+```yaml
+environment:
+  QMAIL_SNI_CERTS: "mail2.example.org:/etc/letsencrypt/live/mail2.example.org/fullchain.pem:/etc/letsencrypt/live/mail2.example.org/privkey.pem"
+```
 
-Set `QMAIL_SNI_CERTS` to a semicolon-separated list of `domain:cert:key` triplets:
+On every startup the entrypoint combines each cert+key into
+`control/servercerts/<domain>/servercert.pem` and generates
+`control/dovecot-sni.conf` with `local_name` blocks.
+
+---
+
+## Greylisting
+
+Two independent greylisting mechanisms are available and can run simultaneously.
+
+### jgreylist (file-based, port 25 only)
+
+Wraps `qmail-smtpd` as a binary in the port 25 run script. No database required.
 
 ```yaml
 environment:
-  QMAIL_SNI_CERTS: "mail2.example.org:/etc/letsencrypt/live/mail2.example.org/fullchain.pem:/etc/letsencrypt/live/mail2.example.org/privkey.pem;mail3.example.net:/etc/letsencrypt/live/mail3.example.net/fullchain.pem:/etc/letsencrypt/live/mail3.example.net/privkey.pem"
-volumes:
-  - /etc/letsencrypt:/etc/letsencrypt:ro
-  - maildata:/srv/mail
+  QMAIL_GREYLISTING: 1
 ```
 
-On every startup the entrypoint:
-- Combines each cert+key into `control/servercerts/<domain>/servercert.pem` (qmail SNI)
-- Generates `control/dovecot-sni.conf` with `local_name` blocks (Dovecot SNI)
-
-The primary domain cert (`QMAIL_TLS_CERT` / `QMAIL_TLS_KEY`) remains the fallback
-for clients that don't send SNI.
-
-Verify with:
+State files persist in `/srv/mail/jgreylist`. Purge expired entries periodically:
 
 ```sh
-openssl s_client -starttls smtp -connect mail.example.com:587 -servername mail2.example.org
+docker compose -f docker/docker-compose.yml exec qmail \
+    /var/qmail/bin/jgreylist-clean
 ```
 
-### DH parameters
+### qmail-spp greylisting plugin (MySQL-backed, all ports)
 
-Generated once at first run using 2048-bit by default. Increase to 4096-bit:
+Runs inside `qmail-smtpd` via the SPP plugin system. Uses the `greylisting`
+MariaDB database. Supports per-IP exemptions, pass/block statistics, and
+automatic bypass for authenticated users (`ifauthskip`).
 
-```yaml
-environment:
-  QMAIL_DH_BITS: 4096
+**Enable** by setting `GREYLIST_USER` in `.env`:
+
+```
+GREYLIST_USER=greylisting
+GREYLIST_PASS=strongpassword
+GREYLIST_DB=greylisting
 ```
 
-To regenerate, delete `dh4096.pem` from the volume and restart.
+On first run the entrypoint writes:
+- `control/mysql.cnf` — database connection config for the plugin
+- `control/greylisting` — plugin settings (block/expire times, log level)
+- `control/smtpplugins` — activates `plugins/ifauthskip` and `plugins/greylisting`
+
+The `greylisting` database and schema are created automatically on the first
+MariaDB start via `docker/mariadb-init/01-greylisting.sh`.
+
+**Tune** settings via env vars or by editing `control/greylisting` in the volume:
+
+```
+mysql_default_file=control/mysql.cnf
+block_expire=2          # minutes
+record_expire=2000      # minutes
+record_expire_good=36   # hours
+loglevel=4
+```
+
+Purge stale records periodically:
+
+```sh
+docker compose -f docker/docker-compose.yml exec qmail \
+    /usr/local/sbin/greylisting_cleanup.sh
+```
+
+---
+
+## Rate limiting
+
+`rcptcheck-overlimit` limits how many messages an authenticated user, domain,
+or IP may send per reset period. Enabled by default on ports 587 and 465.
+
+The default limit is set by `QMAIL_RELAY_LIMIT` (default: `1000`). On first run
+the entrypoint writes `/var/qmail/control/relaylimits`:
+
+```
+# Per-user/domain/IP limits — edit directly for overrides
+:1000
+```
+
+Override per user/domain/IP by editing the file:
+
+```
+poweruser@example.com:5000
+example.com:2000
+1.2.3.4:0          # 0 = unlimited
+:1000              # catch-all default
+```
+
+Per-period counts are stored in `/srv/mail/qmail/overlimit` (persisted in the
+volume). Reset them by purging that directory or running a cron job.
 
 ---
 
@@ -346,17 +493,16 @@ docker compose -f docker/docker-compose.yml exec qmail \
 
 DKIM is automatically configured on first run:
 
-- **Signing**: Outbound mail is signed via `spawn-filter` using keys in `/var/qmail/control/domainkeys/<domain>/default`
-- **Verification**: Inbound mail is verified via `qmail-dkim` with results added to headers
+- **Signing**: Outbound mail is signed via `spawn-filter` using keys in `control/domainkeys/<domain>/default`
+- **Verification**: Inbound mail verified via `qmail-dkim`; `UNSIGNED_SUBJECT=1` allows messages where Subject is absent from the `h=` tag
 
 ### View DKIM DNS record
 
-After first run, the DNS TXT record is saved to:
 ```
 /srv/mail/qmail/control/domainkeys/<domain>.dns.txt
 ```
 
-Add this record to your DNS as `default._domainkey.<domain>`.
+Add as `default._domainkey.<domain>` TXT record.
 
 ### Generate key for additional domain
 
@@ -365,131 +511,69 @@ docker compose -f docker/docker-compose.yml exec qmail \
     /var/qmail/bin/dknewkey -d newdomain.com -t rsa -b 2048 default
 ```
 
-### filterargs configuration
-
-Edit `/srv/mail/qmail/control/filterargs` to customize DKIM signing behavior.
-
 ---
 
 ## DNS blocklists (DNSBL/RBL)
 
-A template `dnsbllist` file is created at `/srv/mail/qmail/control/dnsbllist`.
-Uncomment and customize the blocklists as needed:
+A template `dnsbllist` is created at `/srv/mail/qmail/control/dnsbllist`.
+Uncomment and customise blocklists as needed. Prefix with `-` for 553 reject
+(vs 451 defer):
 
 ```sh
-# Edit the file
 docker compose -f docker/docker-compose.yml exec qmail \
     vi /var/qmail/control/dnsbllist
 ```
-
-Format: one blocklist per line, prefix with `-` for 553 reject (vs 451 defer).
 
 ---
 
 ## qmailadmin web interface
 
-The container includes [qmailadmin](https://github.com/sagredo-dev/qmailadmin), a
-web-based administration interface for managing vpopmail domains and users.
+Access at `http://<server-ip>/`. Login with domain, username, and vpopmail password.
 
-### Access
-
-Open `http://<server-ip>/` in a browser. The root URL redirects to qmailadmin.
-
-### Login
-
-- **Domain**: your virtual domain (e.g. `example.com`)
-- **User**: `postmaster` (or any admin user)
-- **Password**: the postmaster password set via `vadduser`
-
-### Features
-
-- Add/edit/delete users and aliases
-- Manage autoresponders (vacation messages)
-- Configure mail forwarding
-- Manage mailing lists (ezmlm-idx)
-- Set mailbox quotas
+Features: add/edit/delete users and aliases, autoresponders, mail forwarding,
+mailing lists (ezmlm-idx), mailbox quotas.
 
 ---
 
 ## vqadmin (system admin)
 
-[vqadmin](https://github.com/sagredo-dev/vqadmin) is a system-level admin interface
-for managing vpopmail at the domain level (add/remove domains, etc.).
+Access at `http://<server-ip>/cgi-bin/vqadmin/vqadmin.cgi`. Requires HTTP basic
+auth — credentials set via `VQADMIN_USER` / `VQADMIN_PASS` (auto-generated and
+printed to logs on first run if not set).
 
-### Access
-
-Open `http://<server-ip>/cgi-bin/vqadmin/vqadmin.cgi`
-
-### Authentication
-
-vqadmin requires HTTP basic auth. Credentials are set on first run:
-
-- **User**: `admin` (or set via `VQADMIN_USER` env var)
-- **Password**: auto-generated (check container logs) or set via `VQADMIN_PASS` env var
-
-To change the password later:
 ```sh
+# Change password on running container
 docker compose -f docker/docker-compose.yml exec qmail \
     htpasswd /var/qmail/control/vqadmin.htpasswd admin
 ```
-
-### Features
-
-- Add/remove virtual domains
-- View domain statistics
-- Manage domain limits
 
 ---
 
 ## Sieve filtering and ManageSieve
 
-[Pigeonhole Sieve](https://pigeonhole.dovecot.org/) is installed via
-`dovecot-sieve` and `dovecot-managesieved` (Debian packages, pre-compiled
-against Dovecot 2.3.19.1 — no source build needed).
-
-### Delivery pipeline
-
-Mail is delivered via **Dovecot-LDA** instead of `vdelivermail`, enabling Sieve
-to filter every inbound message before it hits the Maildir:
+Mail is delivered via **Dovecot-LDA**, enabling Sieve filtering on every
+inbound message:
 
 ```
 qmail-local → .qmail-default → dovecot-lda → Sieve → Maildir
 ```
 
-The `.qmail-default` in each domain directory is set on first run:
-```
-|/usr/lib/dovecot/dovecot-lda -d "$EXT@$HOST" -f "$SENDER"
-```
-
-### ManageSieve (port 4190)
-
-Mail clients (Thunderbird, Roundcube, etc.) connect to port 4190 to upload and
-manage Sieve scripts. Authentication uses the same credentials as IMAP/POP3.
-
-Per-user scripts are stored at:
-- `~/sieve/` — script collection (managed via ManageSieve)
-- `~/.dovecot.sieve` — active script symlink (points into `~/sieve/`)
-
-Where `~` expands to `/home/vpopmail/domains/<domain>/<user>`.
+ManageSieve (port 4190) lets mail clients upload and manage Sieve scripts.
 
 ### Global Sieve scripts
 
-Server-wide rules (spam-to-Junk, virus tagging, etc.) live in the volume and
-run for every user before or after their personal script:
-
 | Directory | Runs |
 |---|---|
-| `/srv/mail/qmail/control/sieve/before.d/` | Before user's script (alphabetical) |
-| `/srv/mail/qmail/control/sieve/after.d/` | After user's script (alphabetical) |
-
-After adding or changing a global script, compile it:
+| `/srv/mail/qmail/control/sieve/before.d/` | Before user's script |
+| `/srv/mail/qmail/control/sieve/after.d/` | After user's script |
 
 ```sh
+# Compile after adding/changing a global script
 docker compose -f docker/docker-compose.yml exec qmail \
     sievec /var/qmail/control/sieve/before.d/10-spam.sieve
 ```
 
-Example spam-to-Junk global script (`before.d/10-spam.sieve`):
+Example spam-to-Junk script:
 
 ```sieve
 require ["fileinto", "mailbox"];
@@ -499,44 +583,17 @@ if header :contains "X-Spam-Flag" "YES" {
 }
 ```
 
-### Adding Sieve to an existing domain
-
-If the container was started before Sieve support was added, update the
-domain's delivery command manually:
-
-```sh
-docker compose -f docker/docker-compose.yml exec qmail \
-    sh -c 'printf "|/usr/lib/dovecot/dovecot-lda -d \"\$EXT@\$HOST\" -f \"\$SENDER\"\n" \
-        > /home/vpopmail/domains/example.com/.qmail-default && \
-        chown vpopmail:vchkpw /home/vpopmail/domains/example.com/.qmail-default'
-```
-
 ---
 
 ## tcprules (relay and recipient policy)
 
-Three CDB files control TCP access policy, compiled from plain-text source files
-by `tcprules` on first run. They live in `/srv/mail/qmail/control/`.
-
 | File | Port | Purpose |
 |---|---|---|
-| `tcp.smtp` | 25 | Inbound relay — trusted IPs get `RELAYCLIENT=""`, everyone else can receive mail but not relay |
-| `tcp.submission` | 587 | Authenticated submission — all connections allowed, relay gated by `SMTPAUTH` |
+| `tcp.smtp` | 25 | Inbound — trusted IPs get `RELAYCLIENT=""` |
+| `tcp.submission` | 587 | Auth submission — relay gated by `SMTPAUTH` |
 | `tcp.smtps` | 465 | Same as submission over implicit TLS |
 
-The `tcp.smtp` file is generated from the env vars at first run:
-
-```
-0.0.0.0:allow,RELAYCLIENT="",SMTPD_GREETDELAY="0"   # always trusted
-127.:allow,RELAYCLIENT="",SMTPD_GREETDELAY="0"        # always trusted
-192.168.1.:allow,RELAYCLIENT="",SMTPD_GREETDELAY="0"  # from QMAIL_RELAY_NETS
-:allow,CHKUSER_WRONGRCPTLIMIT="3"                      # catch-all
-```
-
-### Modifying rules on a live container
-
-The CDB files are only seeded once (on first run). To update them on an existing
-volume, edit the source file and recompile:
+CDB files are seeded once on first run. To update rules on a live container:
 
 ```sh
 docker compose -f docker/docker-compose.yml exec qmail \
@@ -546,170 +603,29 @@ docker compose -f docker/docker-compose.yml exec qmail \
                     < /var/qmail/control/tcp.smtp'
 ```
 
-To force a full regeneration from env vars, remove the CDB files and restart:
+To regenerate from env vars, remove the CDB files and restart:
 
 ```sh
 docker compose -f docker/docker-compose.yml exec qmail \
     rm /var/qmail/control/tcp.smtp.cdb \
        /var/qmail/control/tcp.submission.cdb \
        /var/qmail/control/tcp.smtps.cdb
-docker compose -f docker/docker-compose.yml restart
+docker compose -f docker/docker-compose.yml restart qmail
 ```
 
 ---
 
 ## IPv6 / Dual-stack
 
-IPv6 support is provided by [ucspi-tcp6](https://www.fehcom.de/ipnet/ucspi-tcp6.html)
-(Erwin Hoffmann), compiled in the builder stage. It replaces Debian's `ucspi-tcp`
-as the network listener for qmail's SMTP ports.
-
-By default the container binds on `0.0.0.0` (IPv4 only). Enable dual-stack to
-bind on `::` and accept both IPv4 and IPv6 connections:
-
 ```yaml
 environment:
   QMAIL_DUALSTACK: 1
 ```
 
-Requires IPv6 to be enabled in Docker:
+Requires IPv6 enabled in Docker (`/etc/docker/daemon.json`):
 
 ```json
-# /etc/docker/daemon.json
-{
-  "ipv6": true,
-  "fixed-cidr-v6": "fd00::/80"
-}
-```
-
-And in `docker-compose.yml`:
-
-```yaml
-networks:
-  default:
-    enable_ipv6: true
-```
-
-### What changes with dualstack enabled
-
-| Component | IPv4 only (`0`) | Dual-stack (`::`) |
-|---|---|---|
-| Port 25 (SMTP) | `0.0.0.0` | `::` |
-| Port 587 (Submission) | `0.0.0.0` | `::` |
-| Port 465 (SMTPS) | `0.0.0.0` | `::` |
-| `tcp.smtp` loopback | `127.` | `127.` + `::1` |
-| Dovecot (IMAP/POP3) | IPv6 always on | IPv6 always on |
-
-Dovecot handles its own networking and supports IPv6 natively regardless of this
-setting.
-
-### Relay nets with IPv6
-
-If you have IPv6 trusted networks, add them to `QMAIL_RELAY_NETS`:
-
-```yaml
-QMAIL_RELAY_NETS: "192.168.1.,2001:db8::"
-```
-
----
-
-## Greylisting
-
-[jgreylist](https://qmail.jms1.net/scripts/jgreylist.shtml) by John Simpson
-provides file-based greylisting — no database required. On first contact from
-an unknown sender, qmail temporarily rejects the message (451). Legitimate MTAs
-retry and are whitelisted; spam bots typically don't.
-
-jgreylist wraps `qmail-smtpd` in the port 25 run script and is transparent to
-submission (587) and SMTPS (465) since authenticated users bypass it.
-
-### Enable
-
-```yaml
-environment:
-  QMAIL_GREYLISTING: 1
-```
-
-State files are stored in `/srv/mail/jgreylist` (persisted in the volume).
-
-### How it works
-
-```
-tcpserver → jgreylist → qmail-smtpd
-              ↓
-         First contact: 451 temporary reject (greylisted)
-         Retry contact: pass through to qmail-smtpd
-```
-
-### Cleanup
-
-Expired greylist entries should be purged periodically. Run from outside the
-container (cron, Kubernetes CronJob, etc.):
-
-```sh
-docker compose -f docker/docker-compose.yml exec qmail \
-    /var/qmail/bin/jgreylist-clean
-```
-
-### Persistent volume path
-
-| Volume path | Symlinked from | Contents |
-|---|---|---|
-| `/srv/mail/jgreylist` | `/var/qmail/jgreylist` | Greylist state files |
-
----
-
-## Mail tapping (qmail-taps-extended)
-
-qmail-taps-extended copies matching messages to a destination address as they
-flow through the queue. Useful for archiving, compliance, or auditing.
-
-### Configuration
-
-Set `QMAIL_TAPS` to a semicolon-separated list of rules at first run:
-
-```yaml
-environment:
-  QMAIL_TAPS: "F:.*@example.com:archive@example.com;T:.*@partner.com:audit@example.com"
-```
-
-Each rule uses the format `TYPE:REGEX:DESTINATION`:
-
-| Field | Values | Description |
-|---|---|---|
-| `TYPE` | `F` | Match on **From** address |
-| | `T` | Match on **To** address |
-| | `A` | Match **all** mail (original Inter7 behavior) |
-| `REGEX` | e.g. `.*@example.com` | Regular expression applied to the address |
-| `DESTINATION` | e.g. `archive@example.com` | Address that receives the copy |
-
-The rules are written to `/var/qmail/control/taps`. If `QMAIL_TAPS` is not set,
-an empty `taps` file is created (tapping disabled).
-
-### Live editing
-
-Unlike CDB-based control files, `taps` is plain text and **takes effect
-immediately** without a restart:
-
-```sh
-docker compose -f docker/docker-compose.yml exec qmail \
-    vi /var/qmail/control/taps
-```
-
-### Examples
-
-```
-# Archive all outbound mail from your domain
-F:.*@example.com:archive@example.com
-
-# Copy all inbound mail to an audit address
-T:.*@example.com:audit@example.com
-
-# Tap a specific user
-T:ceo@example.com:legal@example.com
-
-# Catch-all tap for a domain
-A:.*@example.com:mirror@example.com
+{ "ipv6": true, "fixed-cidr-v6": "fd00::/80" }
 ```
 
 ---
@@ -717,11 +633,9 @@ A:.*@example.com:mirror@example.com
 ## Queue management
 
 ```sh
-# Queue stats
 docker compose -f docker/docker-compose.yml exec qmail \
     /var/qmail/bin/qmail-qstat
 
-# Read queue
 docker compose -f docker/docker-compose.yml exec qmail \
     /var/qmail/bin/qmail-qread
 ```

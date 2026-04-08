@@ -30,6 +30,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libpq-dev \
         libldap-dev \
         libevent-dev \
+        libcrack2-dev \
+        cracklib-runtime \
         mandoc \
         groff \
     && rm -rf /var/lib/apt/lists/*
@@ -123,9 +125,14 @@ RUN wget -q https://github.com/sagredo-dev/vpopmail/archive/refs/tags/v${VPOPMAI
         --enable-vpopuser=vpopmail \
         --enable-vpopgroup=vchkpw \
         --enable-auth-module="${VPOPMAIL_AUTH}" \
+        --enable-incdir=/usr/include/mysql \
+        --enable-libdir=/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH) \
         --enable-file-locking=flock \
         --enable-auth-logging \
         --enable-vusaged \
+        --enable-mysql-limits \
+        --enable-valias \
+        --enable-sql-aliasdomains \
  && make -j"$(nproc)" \
  && make install-strip
 
@@ -154,10 +161,35 @@ RUN make it && make setup
 # jgreylist-clean purges expired entries; run periodically via cron/external.
 RUN wget -q https://notes.sagredo.eu/files/qmail/patches/greylisting/jms/jgreylist.c \
  && cc -o /var/qmail/bin/jgreylist jgreylist.c \
- && chmod 755 /var/qmail/bin/jgreylist \
+ && chmod 0750 /var/qmail/bin/jgreylist \
  && wget -q -O /var/qmail/bin/jgreylist-clean \
         https://notes.sagredo.eu/files/qmail/patches/greylisting/jms/jgreylist-clean \
  && chmod 755 /var/qmail/bin/jgreylist-clean
+
+# ── Step 4c: qmail-spp greylisting plugin ────────────────────────────────────
+# MySQL-backed greylisting that runs inside qmail-smtpd via the SPP plugin
+# mechanism. More flexible than jgreylist: per-IP exemptions, pass/block stats,
+# and skip-for-authenticated via ifauthskip — all without a binary wrapper.
+#
+# Enabled at runtime by listing plugins/greylisting in control/smtpplugins and
+# setting GREYLIST_USER/GREYLIST_PASS/GREYLIST_DB env vars (entrypoint writes
+# control/mysql.cnf and control/greylisting from those).
+WORKDIR /build
+RUN mkdir -p /var/qmail/plugins \
+ && wget -q https://manuel.mausz.at/coding/qmail-spp/greylisting/greylisting-0.5.tgz \
+ && wget -q https://notes.sagredo.eu/files/qmail/patches/greylisting_DEFAULT_SOURCE.patch \
+ && tar xzf greylisting-0.5.tgz \
+ && cd greylisting-0.5 \
+ && patch < ../greylisting_DEFAULT_SOURCE.patch \
+ && cc -std=c99 -o /var/qmail/plugins/greylisting greylisting.c \
+        -I/usr/include/mysql -lmysqlclient \
+ && strip /var/qmail/plugins/greylisting \
+ && cp greylisting_cleanup.sh /usr/local/sbin/greylisting_cleanup.sh \
+ && chmod +x /usr/local/sbin/greylisting_cleanup.sh \
+ && wget -q -O ifauthskip.c \
+        https://notes.sagredo.eu/files/qmail/patches/qmail-spp/plugins/ifauthskip.c \
+ && cc -o /var/qmail/plugins/ifauthskip ifauthskip.c \
+ && strip /var/qmail/plugins/ifauthskip
 
 # ── Step 5: ezmlm-idx ────────────────────────────────────────────────────────
 # High-speed mailing list manager for qmail.
@@ -193,8 +225,11 @@ RUN wget -q https://github.com/sagredo-dev/qmailadmin/archive/refs/tags/v${QMA_V
         --enable-autoresponder-path=/usr/local/bin \
         --enable-ezmlmdir=/usr/local/bin/ezmlm \
         --enable-modify-quota \
-        --enable-maxusersperpage=50 \
-        --enable-maxaliasesperpage=50 \
+        --enable-maxusersperpage=100 \
+        --enable-maxaliasesperpage=100 \
+        --enable-cracklib=/var/cache/cracklib/cracklib_dict \
+        --with-auth-logdir \
+        --disable-catchall \
         --disable-ezmlm-mysql \
         --disable-trivial-password \
  && make \
@@ -240,6 +275,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libpq5 \
         libldap-2.5-0 \
         libevent-2.1-7 \
+        libcrack2 \
         dovecot-imapd \
         dovecot-pop3d \
         dovecot-sieve \
@@ -273,6 +309,7 @@ COPY --from=builder /var/qmail        /var/qmail
 COPY --from=builder /home/vpopmail    /home/vpopmail
 COPY --from=builder /usr/local/lib    /usr/local/lib
 COPY --from=builder /usr/local/bin    /usr/local/bin
+COPY --from=builder /usr/local/sbin   /usr/local/sbin
 COPY --from=builder /var/www/qmailadmin /var/www/qmailadmin
 
 RUN echo '/usr/local/lib' > /etc/ld.so.conf.d/usr-local.conf \

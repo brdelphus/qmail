@@ -49,13 +49,22 @@ MySQL backend must be implemented before the container split is attempted.
 
 ---
 
-## Step 1 — MariaDB (vpopmail auth backend)
+## ✅ Step 1 — MariaDB (vpopmail auth backend) — build verified
 
-- Spin up a `mariadb` container
-- Rebuild the qmail image with `--build-arg VPOPMAIL_AUTH=mysql`
-- Pass DB credentials via env vars (`MYSQL_HOST`, `MYSQL_USER`, `MYSQL_PASS`, `MYSQL_DB`)
-- Write `vpopmail/etc/vpopmail.mysql` from those vars in the entrypoint
-- qmailadmin, vqadmin, chkuser, and vusaged all pick up the MySQL backend automatically
+- [x] Spin up a `mariadb` container with healthcheck
+- [x] Rebuild the qmail image with `--build-arg VPOPMAIL_AUTH=mysql`
+- [x] Pass DB credentials via env vars (`MYSQL_HOST`, `MYSQL_USER`, `MYSQL_PASS`, `MYSQL_DB`)
+- [x] Write `vpopmail/etc/vpopmail.mysql` from those vars in the entrypoint (format: `host|port|user|password|database`)
+- [x] vpopmail configure flags: `--enable-mysql-limits`, `--enable-valias`, `--enable-sql-aliasdomains`, `--enable-incdir=/usr/include/mysql`, `--enable-libdir=/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)`
+- [x] MariaDB credentials via `.env` file — compose auto-loads it
+- [x] qmail service `depends_on: mariadb: condition: service_healthy`
+- [x] Separate greylisting database (`greylisting` DB + user) initialised by `mariadb-init/01-greylisting.sh`
+- [x] qmail-spp MySQL-backed greylisting plugin (`plugins/greylisting` + `plugins/ifauthskip`) built into image
+- [x] All env vars documented in `docker-compose.yml` and `.env.example`
+- [x] qmailadmin built with cracklib password strength checking (`libcrack2-dev` + `cracklib-runtime` in builder; dictionary at `/var/cache/cracklib/cracklib_dict`)
+- [x] Rate limiting via `rcptcheck-overlimit` on ports 587 and 465
+- [x] `FORCETLS=1` on port 587; `DROP_PRE_GREET`, `SURBL`, `ENABLE_SPP` consistent across all three SMTP ports
+- [x] Full image build passes cleanly on `debian:bookworm-slim`
 
 ---
 

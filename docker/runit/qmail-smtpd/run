@@ -31,12 +31,19 @@ fi
 DUALSTACK=$(cat $QMAILDIR/control/dualstack 2>/dev/null || echo 0)
 [ "$DUALSTACK" = "1" ] && BINDADDR="::" || BINDADDR="0"
 
-# Greylisting — jgreylist wraps qmail-smtpd when enabled
-GREYLISTING=$(cat $QMAILDIR/control/greylisting 2>/dev/null || echo 0)
+# jgreylist — file-based binary wrapper (control/jgreylist=1 to enable)
+JGREYLIST=$(cat $QMAILDIR/control/jgreylist 2>/dev/null || echo 0)
 export JGREYLIST_DIR="$QMAILDIR/jgreylist"
 export JGREYLIST_LOG_SMTP=1
 
-if [ "$GREYLISTING" = "1" ]; then
+# qmail-spp greylisting plugin — MySQL-backed, runs inside smtpd via SPP.
+# Activated by the presence of control/greylisting (its config file).
+# The plugin checks for GREYLISTING in the environment; empty string = enabled.
+if [ -f "$QMAILDIR/control/greylisting" ]; then
+    export GREYLISTING=""
+fi
+
+if [ "$JGREYLIST" = "1" ]; then
     exec chpst -m "$SOFTLIMIT" \
         /usr/local/bin/tcpserver -v -R -l "$LOCAL" \
         -x ${TCPRULES_DIR}/tcp.smtp.cdb -c "$MAXSMTPD" \

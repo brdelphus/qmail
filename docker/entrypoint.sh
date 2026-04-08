@@ -34,8 +34,68 @@ link_to_volume() {
 link_to_volume /var/qmail/control    /srv/mail/qmail/control
 link_to_volume /var/qmail/queue      /srv/mail/qmail/queue
 link_to_volume /var/qmail/jgreylist  /srv/mail/jgreylist
+link_to_volume /var/qmail/overlimit  /srv/mail/qmail/overlimit
 link_to_volume /home/vpopmail/domains /srv/mail/vpopmail/domains
 link_to_volume /home/vpopmail/etc    /srv/mail/vpopmail/etc
+
+# ── MySQL backend setup (runs every startup) ──────────────────────────────────
+# Writes /home/vpopmail/etc/vpopmail.mysql from env vars when MYSQL_HOST is set.
+# Format: host|port|database|user|password  (read by vpopmail's MySQL auth module)
+# Re-written on every startup so credential changes take effect without rebuilding.
+if [ -n "$MYSQL_HOST" ]; then
+    if [ -z "$MYSQL_USER" ] || [ -z "$MYSQL_PASS" ] || [ -z "$MYSQL_DB" ]; then
+        echo "ERROR: MYSQL_HOST is set but MYSQL_USER, MYSQL_PASS, or MYSQL_DB is missing" >&2
+        exit 1
+    fi
+    MYSQL_PORT=${MYSQL_PORT:-3306}
+    printf '%s|%s|%s|%s|%s\n' \
+        "$MYSQL_HOST" "$MYSQL_PORT" "$MYSQL_USER" "$MYSQL_PASS" "$MYSQL_DB" \
+        > /home/vpopmail/etc/vpopmail.mysql
+    chmod 600 /home/vpopmail/etc/vpopmail.mysql
+    chown vpopmail:vchkpw /home/vpopmail/etc/vpopmail.mysql
+    echo "qmail: vpopmail MySQL backend configured ($MYSQL_USER@$MYSQL_HOST:$MYSQL_PORT/$MYSQL_DB)"
+fi
+
+# ── qmail-spp greylisting plugin setup (runs every startup) ──────────────────
+# Writes control/mysql.cnf and control/greylisting when GREYLIST_USER is set.
+# control/greylisting is the plugin's config file (read by plugins/greylisting).
+# control/jgreylist (0/1) is the separate toggle for the jgreylist binary wrapper.
+if [ -n "$GREYLIST_USER" ]; then
+    if [ -z "$GREYLIST_PASS" ] || [ -z "$GREYLIST_DB" ]; then
+        echo "ERROR: GREYLIST_USER is set but GREYLIST_PASS or GREYLIST_DB is missing" >&2
+        exit 1
+    fi
+    GREYLIST_HOST=${GREYLIST_HOST:-${MYSQL_HOST:-mariadb}}
+    cat > "$CONTROL/mysql.cnf" << EOF
+[client]
+host=${GREYLIST_HOST}
+user=${GREYLIST_USER}
+password=${GREYLIST_PASS}
+database=${GREYLIST_DB}
+EOF
+    chmod 600 "$CONTROL/mysql.cnf"
+    chown vpopmail:vchkpw "$CONTROL/mysql.cnf"
+
+    cat > "$CONTROL/greylisting" << EOF
+mysql_default_file=control/mysql.cnf
+block_expire=${GREYLIST_BLOCK_EXPIRE:-2}
+record_expire=${GREYLIST_RECORD_EXPIRE:-2000}
+record_expire_good=${GREYLIST_RECORD_EXPIRE_GOOD:-36}
+loglevel=${GREYLIST_LOGLEVEL:-4}
+EOF
+    chmod 644 "$CONTROL/greylisting"
+    chown root:root "$CONTROL/greylisting"
+
+    # Default smtpplugins — written only on first run, editable afterwards.
+    if [ ! -f "$CONTROL/smtpplugins" ]; then
+        cat > "$CONTROL/smtpplugins" << 'EOF'
+[rcpt]
+plugins/ifauthskip
+plugins/greylisting
+EOF
+        echo "qmail: spp greylisting configured ($GREYLIST_USER@$GREYLIST_HOST/$GREYLIST_DB)"
+    fi
+fi
 
 # ── First-run: populate required control files from env vars ──────────────────
 # Detected by absence of control/me — only runs once per fresh volume.
@@ -48,12 +108,16 @@ if [ ! -f "$CONTROL/me" ]; then
 
     QMAIL_DOMAIN=${QMAIL_DOMAIN:-$(echo "$QMAIL_ME" | cut -d. -f2-)}
     QMAIL_SOFTLIMIT=${QMAIL_SOFTLIMIT:-64000000}
-    QMAIL_CONCURRENCY_INCOMING=${QMAIL_CONCURRENCY_INCOMING:-20}
+    QMAIL_CONCURRENCY_INCOMING=${QMAIL_CONCURRENCY_INCOMING:-200}
     QMAIL_CONCURRENCY_REMOTE=${QMAIL_CONCURRENCY_REMOTE:-20}
     QMAIL_CONCURRENCY_LOCAL=${QMAIL_CONCURRENCY_LOCAL:-10}
     QMAIL_DATABYTES=${QMAIL_DATABYTES:-20000000}
     QMAIL_MAXRCPT=${QMAIL_MAXRCPT:-100}
     QMAIL_SPFBEHAVIOR=${QMAIL_SPFBEHAVIOR:-3}
+    QMAIL_BOUNCEFROM=${QMAIL_BOUNCEFROM:-noreply}
+    QMAIL_QUEUELIFETIME=${QMAIL_QUEUELIFETIME:-272800}
+    QMAIL_BRTLIMIT=${QMAIL_BRTLIMIT:-2}
+    QMAIL_TLS_CIPHERS=${QMAIL_TLS_CIPHERS:-HIGH:MEDIUM:!MD5:!RC4:!3DES:!LOW:!SSLv2:!SSLv3}
 
     echo "qmail: first run — writing control files for $QMAIL_ME"
 
@@ -71,14 +135,18 @@ if [ ! -f "$CONTROL/me" ]; then
     printf '%s' "$QMAIL_CONCURRENCY_LOCAL"   > "$CONTROL/concurrencylocal"
     printf '%s' "$QMAIL_DATABYTES"           > "$CONTROL/databytes"
     printf '%s' "$QMAIL_MAXRCPT"             > "$CONTROL/maxrcpt"
-    printf '%s' "2"                          > "$CONTROL/brtlimit"
-    printf '%s' "HIGH:MEDIUM:!MD5:!RC4:!3DES:!LOW:!SSLv2:!SSLv3" \
-                                             > "$CONTROL/tlsserverciphers"
+    printf '%s' "$QMAIL_BRTLIMIT"             > "$CONTROL/brtlimit"
+    printf '%s' "$QMAIL_TLS_CIPHERS"         > "$CONTROL/tlsserverciphers"
 
-    printf '%s' "MAILER-DAEMON"              > "$CONTROL/bouncefrom"
+    printf '%s' "$QMAIL_BOUNCEFROM"          > "$CONTROL/bouncefrom"
     printf '%s' "$QMAIL_ME"                  > "$CONTROL/bouncehost"
     printf '%s' "$QMAIL_SPFBEHAVIOR"         > "$CONTROL/spfbehavior"
-    printf '%s' "272800"                     > "$CONTROL/queuelifetime"
+    printf '%s' "$QMAIL_QUEUELIFETIME"       > "$CONTROL/queuelifetime"
+
+    # Optional: custom SPF explanation message
+    if [ -n "$QMAIL_SPF_EXP" ]; then
+        printf '%s' "$QMAIL_SPF_EXP" > "$CONTROL/spfexp"
+    fi
 
     # Greetdelay and SURBL — configurable via env vars
     QMAIL_GREETDELAY=${QMAIL_GREETDELAY:-5}
@@ -204,12 +272,33 @@ EOF
     QMAIL_DUALSTACK=${QMAIL_DUALSTACK:-0}
     printf '%s' "$QMAIL_DUALSTACK" > "$CONTROL/dualstack"
 
-    # ── Optional: greylisting setup ───────────────────────────────────────────
-    # QMAIL_GREYLISTING=1 enables jgreylist wrapping on port 25.
+    # ── Rate limiting setup ───────────────────────────────────────────────────
+    # control/relaylimits — per-user/domain/IP send limits for rcptcheck-overlimit.
+    # Format: "user@domain:N", "domain:N", "IP:N", ":N" (catch-all default). 0=unlimited.
+    chmod 755 "$QMAILDIR/overlimit"
+    chown vpopmail:vchkpw "$QMAILDIR/overlimit"
+    if [ ! -f "$CONTROL/relaylimits" ]; then
+        QMAIL_RELAY_LIMIT=${QMAIL_RELAY_LIMIT:-1000}
+        cat > "$CONTROL/relaylimits" << EOF
+# Per-user/domain/IP send limits for rcptcheck-overlimit.
+# Format: user@domain:N  |  domain:N  |  IP:N  |  :N (default)
+# 0 = unlimited for that entry. Reset daily by cron.
+# Examples:
+#   poweruser@example.com:5000
+#   example.com:2000
+#   1.2.3.4:0
+:${QMAIL_RELAY_LIMIT}
+EOF
+        echo "qmail: relay rate limit set to ${QMAIL_RELAY_LIMIT} messages/period"
+    fi
+
+    # ── Optional: jgreylist setup ─────────────────────────────────────────────
+    # QMAIL_GREYLISTING=1 enables the jgreylist binary wrapper on port 25.
     # State files live in /var/qmail/jgreylist (persisted in the volume).
     # Run jgreylist-clean periodically to purge expired entries.
     QMAIL_GREYLISTING=${QMAIL_GREYLISTING:-0}
-    printf '%s' "$QMAIL_GREYLISTING" > "$CONTROL/greylisting"
+    printf '%s' "$QMAIL_GREYLISTING" > "$CONTROL/jgreylist"
+    chmod 0700 "$QMAILDIR/jgreylist"
     chown vpopmail:vchkpw "$QMAILDIR/jgreylist"
 
     # ── Optional: qmail-taps-extended setup ───────────────────────────────────

@@ -17,9 +17,29 @@ CERTFILE=$QMAILDIR/control/servercert.pem
 DHFILE=$QMAILDIR/control/dh4096.pem
 
 # Auth required on port 465 (submission over implicit TLS)
+# FORCETLS and DISABLETLS are not needed — TLS is implicit via sslserver.
 export SMTPAUTH="!"
 export CHKUSER_START=ALWAYS
 export FORCEAUTHMAILFROM=1
+export SMTPD_GREETDELAY=$(cat $QMAILDIR/control/greetdelay 2>/dev/null || echo 5)
+export DROP_PRE_GREET=1
+
+# SURBL and DKIM — same as port 25
+export SURBL=$(cat $QMAILDIR/control/surbl 2>/dev/null || echo 0)
+export QMAILQUEUE=$QMAILDIR/bin/qmail-dkim
+
+# SPP plugins — enabled when control/smtpplugins and plugins/ exist
+if [ ! -f $QMAILDIR/control/smtpplugins ] || [ ! -d $QMAILDIR/plugins ]; then
+    export ENABLE_SPP=0
+else
+    export ENABLE_SPP=1
+fi
+
+# Rate limiting — same config as port 587
+export RCPTCHECK="$QMAILDIR/bin/rcptcheck-overlimit"
+export RCPTCHECKRELAYCLIENT="1"
+export OVERLIMITDIR="$QMAILDIR/overlimit"
+export LIMITSCONTROLFILE="$QMAILDIR/control/relaylimits"
 
 exec chpst -m "$SOFTLIMIT" \
     /usr/local/bin/sslserver -v -R -l "$LOCAL" \

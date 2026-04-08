@@ -11,10 +11,30 @@ DUALSTACK=$(cat $QMAILDIR/control/dualstack 2>/dev/null || echo 0)
 
 # Auth required on port 587
 export SMTPAUTH="!"
-export SMTPD_GREETDELAY=3
-export DROP_PRE_GREET=1
+export FORCETLS=1
 export CHKUSER_START=ALWAYS
 export FORCEAUTHMAILFROM=1
+export SMTPD_GREETDELAY=$(cat $QMAILDIR/control/greetdelay 2>/dev/null || echo 5)
+export DROP_PRE_GREET=1
+
+# SURBL and DKIM — same as port 25
+export SURBL=$(cat $QMAILDIR/control/surbl 2>/dev/null || echo 0)
+export QMAILQUEUE=$QMAILDIR/bin/qmail-dkim
+
+# SPP plugins (e.g. greylisting) — enabled when control/smtpplugins and plugins/ exist
+if [ ! -f $QMAILDIR/control/smtpplugins ] || [ ! -d $QMAILDIR/plugins ]; then
+    export ENABLE_SPP=0
+else
+    export ENABLE_SPP=1
+fi
+
+# Rate limiting — restrict how many messages an auth user/domain/IP may send.
+# control/relaylimits format: "user@domain:N", "domain:N", "IP:N", ":N" (default)
+# 0 = unlimited for that entry. Counts reset by cron via greylisting_cleanup or similar.
+export RCPTCHECK="$QMAILDIR/bin/rcptcheck-overlimit"
+export RCPTCHECKRELAYCLIENT="1"
+export OVERLIMITDIR="$QMAILDIR/overlimit"
+export LIMITSCONTROLFILE="$QMAILDIR/control/relaylimits"
 
 exec chpst -m "$SOFTLIMIT" \
     /usr/local/bin/tcpserver -v -R -l "$LOCAL" \
