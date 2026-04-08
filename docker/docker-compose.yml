@@ -216,6 +216,30 @@ services:
       timeout: 5s
       retries: 5
 
+  oletools:
+    build:
+      context: ..
+      dockerfile: docker/oletools/Dockerfile
+    image: oletools:latest
+    # Optional — enable with the "macros" profile:
+    #   docker compose --profile macros up
+    #   docker compose --profile macros build oletools
+    # When not running, rspamd times out and passes mail through (fail-open).
+    profiles: ["macros"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "11343"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    environment:
+      OLEFY_BINDADDRESS: "0.0.0.0"
+      OLEFY_BINDPORT: "11343"
+      OLEFY_TMPDIR: /dev/shm
+      OLEFY_LOGLEVEL: ${OLEFY_LOGLEVEL:-20}
+    # port 11343 is internal only — rspamd connects over the compose network
+
   tika:
     image: apache/tika:latest
     restart: unless-stopped

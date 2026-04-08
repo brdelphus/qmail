@@ -4,17 +4,18 @@ Containerised build of [sagredo-dev/qmail](https://github.com/sagredo-dev/qmail)
 a heavily patched netqmail-1.06 with TLS, DKIM, SPF, SRS, SMTP AUTH, chkuser,
 SURBL, greylisting, simscan and more — running under **runit** on **Debian bookworm-slim**.
 
-The compose stack runs seven containers:
+The compose stack runs up to eight containers:
 
-| Container | Role | Ports |
-|---|---|---|
-| **qmail** | MTA — SMTP, submission, qmailadmin, vqadmin, simscan | 25, 80, 465, 587 |
-| **dovecot** | IMAP/POP3/ManageSieve, LMTP delivery endpoint | 110, 143, 993, 995, 4190 |
-| **mariadb** | vpopmail auth/quota backend | internal |
-| **clamav** | `clamd` + `freshclam` antivirus (called by rspamd) | internal :3310 |
-| **rspamd** | Spam filtering, antivirus, DKIM verify, DMARC, RBL, Bayes | :11334 (web UI) |
-| **redis** | Rspamd Bayes + fuzzy state | internal |
-| **tika** | Attachment text extraction for rspamd (PDF, DOCX, XLSX, …) | internal :9998 |
+| Container | Role | Ports | Profile |
+|---|---|---|---|
+| **qmail** | MTA — SMTP, submission, qmailadmin, vqadmin, simscan | 25, 80, 465, 587 | — |
+| **dovecot** | IMAP/POP3/ManageSieve, LMTP delivery endpoint | 110, 143, 993, 995, 4190 | — |
+| **mariadb** | vpopmail auth/quota backend | internal | — |
+| **clamav** | `clamd` + `freshclam` antivirus (called by rspamd) | internal :3310 | — |
+| **rspamd** | Spam filtering, antivirus, DKIM verify, DMARC, RBL, Bayes | :11334 (web UI) | — |
+| **redis** | Rspamd Bayes + fuzzy state | internal | — |
+| **tika** | Attachment text extraction for rspamd (PDF, DOCX, XLSX, …) | internal :9998 | — |
+| **oletools** | Office macro scanning via olefy/olevba | internal :11343 | `macros` |
 
 ---
 
@@ -853,6 +854,9 @@ container. Files present:
 | `greylist.conf` | Greylisting disabled (qmail-spp handles it) |
 | `dkim_signing.conf` | DKIM signing disabled (qmail-dkim handles it) |
 | `tika.conf` | Apache Tika URL + timeout + MIME type filter for attachment extraction |
+| `external_services.conf` | olefy connection + MIME type + extension filter for Office macro scanning |
+| `composites.conf` | `OLETOOLS_MACRO_MRAPTOR` + `OLETOOLS_MACRO_SUSPICIOUS` composite expressions |
+| `force_actions.conf` | Force reject on macro composites; soft reject on `OLETOOLS_FAIL` |
 
 ---
 
@@ -878,6 +882,61 @@ silently. Port 9998 is internal only.
 | Variable | Default | Description |
 |---|---|---|
 | `TIKA_JAVA_OPTS` | `-Xms128m -Xmx512m` | JVM heap settings — increase `-Xmx` if Tika OOMs on large attachments |
+
+---
+
+## Oletools (Office macro scanning)
+
+[olefy](https://github.com/HeinleinSupport/olefy) wraps
+[olevba](https://github.com/decalage2/oletools) as a TCP daemon. rspamd submits
+Office attachments via the `external_services` module, olevba analyses them for
+macro capabilities, and rspamd rejects documents matching the detection composites.
+
+```
+rspamd :11333
+  └── Office attachment (doc/xls/ppt/…)
+        └── TCP → olefy :11343 → olevba → capability flags
+                                             └── OLETOOLS_* symbols → composites → reject
+```
+
+### Enabling
+
+Oletools is **optional** — gated behind the `macros` compose profile:
+
+```sh
+# Build the image
+docker compose -f docker/docker-compose.yml --profile macros build oletools
+
+# Start with macro scanning enabled
+docker compose -f docker/docker-compose.yml --profile macros up -d
+```
+
+When the container is not running, rspamd times out connecting to olefy and
+passes mail through without macro scanning (fail-open).
+
+### Detection logic
+
+| Composite | Expression | Score | Action |
+|---|---|---|---|
+| `OLETOOLS_MACRO_MRAPTOR` | `(A & W) \| (A & X) \| (W & X)` | 20.0 | reject |
+| `OLETOOLS_MACRO_SUSPICIOUS` | `FLAG \| VBASTOMP \| A` | 20.0 | reject |
+| `OLETOOLS_FAIL` | olevba scan error | — | soft reject |
+
+Where: A = macro present, W = write to disk, X = execute process, FLAG = olevba suspicious keyword, VBASTOMP = VBA stomping detected.
+
+### Rspamd config files
+
+| File | Purpose |
+|---|---|
+| `external_services.conf` | olefy connection, timeout, MIME type + extension filter |
+| `composites.conf` | `OLETOOLS_MACRO_MRAPTOR` and `OLETOOLS_MACRO_SUSPICIOUS` composite expressions |
+| `force_actions.conf` | Force reject on composites; soft reject on `OLETOOLS_FAIL` |
+
+### Oletools env vars
+
+| Variable | Default | Description |
+|---|---|---|
+| `OLEFY_LOGLEVEL` | `20` | Python log level (`10`=DEBUG, `20`=INFO, `30`=WARNING) |
 
 ---
 

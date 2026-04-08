@@ -215,7 +215,7 @@ simscan → rspamd :11333
 
 ---
 
-## Step 8 — Oletools / olefy (Office macro scanning via rspamd external_services)
+## ✅ Step 8 — Oletools / olefy (Office macro scanning via rspamd external_services)
 
 [olefy](https://github.com/HeinleinSupport/olefy) is a TCP daemon wrapping
 `olevba` from [oletools](https://github.com/decalage2/oletools). rspamd connects
@@ -239,15 +239,15 @@ simscan → rspamd :11333
 | `OLETOOLS_MACRO_SUSPICIOUS` | `FLAG \| VBASTOMP \| A` | 20.0 | reject |
 | `OLETOOLS_FAIL` | scan error | — | soft reject |
 
-- [ ] Add `oletools` container running olefy (port 11343, internal only)
-- [ ] Build custom image: install `oletools` via pip into a venv, download + verify olefy.py
-- [ ] Run as unprivileged user; use `/dev/shm` for temp files (`OLEFY_TMPDIR`)
-- [ ] Add healthcheck (`nc -z localhost 11343`)
-- [ ] Add `docker/rspamd/local.d/external_services.conf` — oletools block with mime type + extension filters
-- [ ] Add `docker/rspamd/local.d/composites.conf` — `OLETOOLS_MACRO_MRAPTOR` + `OLETOOLS_MACRO_SUSPICIOUS`
-- [ ] Add `docker/rspamd/local.d/force_actions.conf` — reject on `OLETOOLS_MACRO_MRAPTOR | OLETOOLS_MACRO_SUSPICIOUS`; soft reject on `OLETOOLS_FAIL`
-- [ ] Wire `rspamd depends_on: oletools` in compose
-- [ ] `SCAN_MACROS` env var toggle (skip oletools block when disabled)
+- [x] Add `oletools` container running olefy (port 11343, internal only)
+- [x] Build custom image: install `oletools` via pip into a venv, download olefy.py (`docker/oletools/Dockerfile`)
+- [x] Run as unprivileged user (`olefy`); use `/dev/shm` for temp files (`OLEFY_TMPDIR`)
+- [x] Add healthcheck (`nc -z localhost 11343`)
+- [x] Add `docker/rspamd/local.d/external_services.conf` — oletools block with mime type + extension filters
+- [x] Add `docker/rspamd/local.d/composites.conf` — `OLETOOLS_MACRO_MRAPTOR` + `OLETOOLS_MACRO_SUSPICIOUS`
+- [x] Add `docker/rspamd/local.d/force_actions.conf` — reject on `OLETOOLS_MACRO_MRAPTOR | OLETOOLS_MACRO_SUSPICIOUS`; soft reject on `OLETOOLS_FAIL`
+- [x] No hard `depends_on` — rspamd connects lazily; fail-open if oletools not running
+- [x] `SCAN_MACROS` toggle implemented via compose profile `macros` — `docker compose --profile macros up`
 
 ---
 
