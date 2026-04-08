@@ -11,8 +11,8 @@ The compose stack runs six containers:
 | **qmail** | MTA — SMTP, submission, qmailadmin, vqadmin, simscan | 25, 80, 465, 587 |
 | **dovecot** | IMAP/POP3/ManageSieve, LMTP delivery endpoint | 110, 143, 993, 995, 4190 |
 | **mariadb** | vpopmail auth/quota backend | internal |
-| **clamav** | `clamd` + `freshclam` antivirus | internal :3310 |
-| **rspamd** | Spam filtering, DKIM verify, DMARC, RBL, Bayes | :11334 (web UI) |
+| **clamav** | `clamd` + `freshclam` antivirus (called by rspamd) | internal :3310 |
+| **rspamd** | Spam filtering, antivirus, DKIM verify, DMARC, RBL, Bayes | :11334 (web UI) |
 | **redis** | Rspamd Bayes + fuzzy state | internal |
 
 ---
@@ -41,7 +41,7 @@ fehQlibs → ucspi-tcp6 → ucspi-ssl → libsrs2 → netqmail → vpopmail → 
 | **jgreylist** | file-based greylisting wrapper compiled into `/var/qmail/bin/` |
 | **spp-greylisting + ifauthskip** | MySQL-backed greylisting plugin + auth-skip plugin compiled into `/var/qmail/plugins/` |
 | **ripMIME** | MIME extractor required by simscan for attachment scanning |
-| **simscan** | `qmail-queue` filter — scans via ClamAV + Rspamd before queueing |
+| **simscan** | `qmail-queue` filter — calls Rspamd before queueing; rspamd owns AV via ClamAV |
 | **ezmlm-idx** | mailing list manager, used by qmailadmin |
 | **qmailadmin** | web UI for domain/user management |
 | **vqadmin** | system-level domain admin |
@@ -334,10 +334,10 @@ The **qmail** container runs six supervised services under `runsvdir`:
 
 | Service | Port | Notes |
 |---|---|---|
-| `qmail-smtpd` | 25 | chkuser, SPF, SURBL, DKIM verify → simscan → queue; optional jgreylist + spp greylisting |
+| `qmail-smtpd` | 25 | chkuser, SPF, SURBL, DKIM verify → simscan → rspamd → queue; optional jgreylist + spp greylisting |
 | `qmail-send` | — | Queue manager; DKIM signing via `control/filterargs` at remote delivery |
-| `qmail-submission` | 587 | Auth required (`SMTPAUTH=!`), `FORCETLS=1`, rate limiting, simscan |
-| `qmail-smtps` | 465 | Auth required, implicit TLS via `sslserver`, rate limiting, simscan |
+| `qmail-submission` | 587 | Auth required (`SMTPAUTH=!`), `FORCETLS=1`, rate limiting, simscan → rspamd |
+| `qmail-smtps` | 465 | Auth required, implicit TLS via `sslserver`, rate limiting, simscan → rspamd |
 | `lighttpd` | 80 | qmailadmin + vqadmin CGI |
 | `vusaged` | — | vpopmail quota usage daemon |
 
@@ -655,36 +655,37 @@ appear in the scripts themselves.
 
 [ClamAV](https://www.clamav.net) runs `clamd` + `freshclam` in its own container.
 [Simscan](https://github.com/sagredo-dev/simscan) is a `qmail-queue` wrapper
-built into the qmail image that calls ClamAV and Rspamd before accepting a message.
+built into the qmail image that passes every message to Rspamd before queueing.
+Rspamd owns antivirus scanning — it calls clamd directly via its `antivirus`
+module, so virus verdicts combine with spam, DMARC, RBL, and Bayes signals in
+one place.
 
 ### Delivery chain
 
 ```
 qmail-smtpd
-  → QMAILQUEUE=qmail-dkim  (DKIM verification)
-  → DKIMQUEUE=simscan       (when SIMSCAN_ENABLE=true)
-      ├── /usr/bin/clamdscan ──INSTREAM──► clamd :3310
-      └── /usr/local/bin/rspamd-spamc ────HTTP──► rspamd :11333
+  → QMAILQUEUE=qmail-dkim        (DKIM verification)
+  → DKIMQUEUE=simscan            (when SIMSCAN_ENABLE=true)
+      └── rspamd-spamc ──HTTP──► rspamd :11333
+                                     └── antivirus ──INSTREAM──► clamd :3310
   → /var/qmail/bin/qmail-queue
 ```
 
-`clamdscan` is a Python3 INSTREAM client (ClamAV 1.x removed the standalone
-binary). Both scanners fail open — if the remote daemon is unreachable, mail
-passes through unscanned rather than being rejected.
+Both rspamd and clamd fail open — if either daemon is unreachable, mail passes
+through rather than being rejected.
 
 ### Simscan env vars
 
 | Variable | Default | Description |
 |---|---|---|
 | `SIMSCAN_ENABLE` | `true` | Master toggle — `false` bypasses simscan on all ports |
-| `SIMSCAN_CLAM` | `yes` | ClamAV scanning |
+| `SIMSCAN_CLAM` | `no` | ClamAV in simscan — disabled; rspamd owns AV via its antivirus module |
 | `SIMSCAN_SPAM` | `yes` | Rspamd spam scanning |
 | `SIMSCAN_SPAM_HITS` | `9.0` | Spam score rejection threshold |
 | `SIMSCAN_SIZE_LIMIT` | `20000000` | Max bytes to scan (`0`=unlimited) |
 | `SIMSCAN_ATTACH` | — | Blocked attachment extensions, semicolon-separated (e.g. `.vbs;.lnk;.scr`) |
 | `SIMSCAN_DEBUG` | `0` | Debug verbosity 0–4 |
-| `CLAMD_HOST` | `clamav` | clamd container hostname |
-| `CLAMD_PORT` | `3310` | clamd TCP port |
+| `RSPAMD_TAG_ONLY` | `false` | When `true`, rspamd adds headers but simscan never rejects on spam score |
 
 These are written into `/var/qmail/simscan/simcontrol` on first run. To apply
 changes on an existing volume, delete the file and restart, or edit it directly
@@ -692,9 +693,9 @@ for per-domain overrides:
 
 ```
 # Format: [user@]domain:option=value,...
-user@example.com:clam=yes,spam=yes,spam_hits=6.0,attach=.vbs:.lnk:.scr
-example.com:clam=yes,spam=yes,spam_hits=7.0
-:clam=yes,spam=yes,spam_hits=9.0,size_limit=20000000
+user@example.com:spam=yes,spam_hits=6.0,attach=.vbs:.lnk:.scr
+example.com:spam=yes,spam_hits=7.0
+:spam=yes,spam_hits=9.0,size_limit=20000000
 ```
 
 After editing, recompile:
@@ -708,19 +709,21 @@ docker compose -f docker/docker-compose.yml exec qmail \
 
 ## Rspamd
 
-[Rspamd](https://rspamd.com) handles spam scoring, DKIM verification, DMARC,
-SPF, RBL checks, and Bayes learning (state in Redis). It is called by simscan
-via the `rspamd-spamc` wrapper over the HTTP API on port 11333.
+[Rspamd](https://rspamd.com) handles spam scoring, antivirus (via ClamAV),
+DKIM verification, DMARC, SPF, RBL checks, and Bayes learning (state in Redis).
+It is called by simscan via the `rspamd-spamc` wrapper over the HTTP API on
+port 11333.
 
 Web UI is available at `http://<host>:11334/`.
 
-### Rspamd env var
+### Rspamd env vars
 
 | Variable | Default | Description |
 |---|---|---|
-| `RSPAMD_PASSWORD` | `changeme_rspamd` | Web UI password — generate hash with `docker compose exec rspamd rspamadm pw` |
-| `RSPAMD_HOST` | `rspamd` | rspamd container hostname (used by rspamd-spamc wrapper) |
+| `RSPAMD_PASSWORD` | `changeme_rspamd` | Web UI + controller password — generate hash with `docker compose exec rspamd rspamadm pw` |
+| `RSPAMD_HOST` | `rspamd` | rspamd hostname used by the `rspamd-spamc` wrapper in the qmail container |
 | `RSPAMD_PORT` | `11333` | rspamd HTTP API port |
+| `RSPAMD_TAG_ONLY` | `false` | Tag-only mode — rspamd scores and adds headers but simscan never rejects on spam score |
 
 ### Setting a proper web UI password
 
@@ -742,6 +745,7 @@ container. Files present:
 
 | File | Purpose |
 |---|---|
+| `antivirus.conf` | ClamAV via clamd TCP — reject on `CLAM_VIRUS`, fail open if clamd unreachable |
 | `redis.conf` | Redis backend for all modules |
 | `classifier-bayes.conf` | Bayes with Redis + autolearn |
 | `greylist.conf` | Greylisting disabled (qmail-spp handles it) |
