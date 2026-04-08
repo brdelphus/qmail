@@ -1,3 +1,0 @@
-#!/bin/sh
-mkdir -p /var/log/qmail/dovecot
-exec chpst -u qmaill /usr/bin/svlogd -tt /var/log/qmail/dovecot

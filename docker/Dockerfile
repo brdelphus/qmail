@@ -258,12 +258,7 @@ ARG VPOPMAIL_AUTH=cdb
 # Runtime client libraries — only the one matching the compiled-in backend
 # is strictly needed, but installing all keeps the image backend-agnostic so
 # you can swap the backend by rebuilding without touching this stage.
-# Pin Dovecot to 2.3.x — Dovecot 2.4 removed the checkpassword passdb driver
-# used by vchkpw. Bookworm ships 2.3.19.1; the preference file blocks any
-# future upgrade past 2.3 if the base image ever moves to a newer release.
-RUN printf 'Package: dovecot-*\nPin: version 1:2.3.*\nPin-Priority: 1001\n' \
-        > /etc/apt/preferences.d/dovecot-23
-
+# Note: Dovecot has been split into a separate container.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         runit \
         ucspi-tcp \
@@ -276,10 +271,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libldap-2.5-0 \
         libevent-2.1-7 \
         libcrack2 \
-        dovecot-imapd \
-        dovecot-pop3d \
-        dovecot-sieve \
-        dovecot-managesieved \
         lighttpd \
         lighttpd-mod-authn-file \
         apache2-utils \
@@ -288,10 +279,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Same pinned UIDs/GIDs as builder — no ownership fix-up needed.
-# Cross-group memberships for qmail ↔ vpopmail ↔ Dovecot interop:
+# Cross-group memberships for qmail ↔ vpopmail interop:
 #   vpopmail → qmail  : vpopmail tools can interact with qmail queue/binaries
 #   qmailq   → vchkpw : qmail-queue can access vpopmail domain/user structures
-#   dovecot  → qmail  : Dovecot processes (LDA, auth) can interact with qmail
+# Note: Dovecot is now in a separate container.
 RUN groupadd -g 2107 qmail \
  && groupadd -g 2108 nofiles \
  && groupadd -g 2109 vchkpw \
@@ -302,8 +293,7 @@ RUN groupadd -g 2107 qmail \
  && useradd -u 2111 -g nofiles -G vchkpw -d /var/qmail -M -s /usr/sbin/nologin qmailq \
  && useradd -u 2112 -g qmail   -d /var/qmail       -M -s /usr/sbin/nologin qmailr \
  && useradd -u 2113 -g qmail   -d /var/qmail       -M -s /usr/sbin/nologin qmails \
- && useradd -u 89   -g vchkpw  -G qmail -d /home/vpopmail -m -s /usr/sbin/nologin vpopmail \
- && usermod -a -G qmail dovecot
+ && useradd -u 89   -g vchkpw  -G qmail -d /home/vpopmail -m -s /usr/sbin/nologin vpopmail
 
 COPY --from=builder /var/qmail        /var/qmail
 COPY --from=builder /home/vpopmail    /home/vpopmail
@@ -316,22 +306,23 @@ RUN echo '/usr/local/lib' > /etc/ld.so.conf.d/usr-local.conf \
  && ldconfig \
  && ln -s /var/qmail/bin/sendmail /usr/sbin/sendmail
 
-# Dovecot config — overrides the Debian default
-COPY docker/dovecot.conf /etc/dovecot/dovecot.conf
-
 # Lighttpd config for qmailadmin CGI
 COPY docker/lighttpd.conf /etc/lighttpd/lighttpd.conf
 
+# LMTP delivery script for qmail → Dovecot (bash, uses /dev/tcp)
+COPY docker/lmtp-deliver /var/qmail/bin/lmtp-deliver
+RUN chmod +x /var/qmail/bin/lmtp-deliver
+
 # Runit service definitions
+# Note: Dovecot is now in a separate container.
 COPY docker/runit /etc/sv
 RUN mkdir -p /etc/service /var/log/qmail \
- && for svc in qmail-smtpd qmail-send qmail-submission qmail-smtps dovecot lighttpd vusaged; do \
+ && for svc in qmail-smtpd qmail-send qmail-submission qmail-smtps lighttpd vusaged; do \
       chmod +x /etc/sv/$svc/run /etc/sv/$svc/log/run; \
       mkdir -p /var/log/qmail/$svc; \
       ln -s /etc/sv/$svc /etc/service/$svc; \
     done \
- && chown -R qmaill:nofiles /var/log/qmail \
- && mkdir -p /run/dovecot
+ && chown -R qmaill:nofiles /var/log/qmail
 
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/healthcheck.sh /healthcheck.sh
@@ -340,7 +331,9 @@ RUN chmod +x /entrypoint.sh /healthcheck.sh
 # Label the compiled-in vpopmail backend for introspection
 LABEL vpopmail.auth="${VPOPMAIL_AUTH}"
 
-EXPOSE 25 80 110 143 465 587 993 995 4190
+# Ports: SMTP (25), HTTP (80), SMTPS (465), Submission (587)
+# Note: IMAP/POP3/ManageSieve ports are now in the dovecot container.
+EXPOSE 25 80 465 587
 
 # Single persistent volume — all mutable data lives under /srv/mail:
 #   /srv/mail/qmail/control     → symlinked from /var/qmail/control

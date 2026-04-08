@@ -1,0 +1,60 @@
+#!/bin/bash
+# LMTP delivery script for qmail → Dovecot
+# Called from .qmail-default with: |/var/qmail/bin/lmtp-deliver
+#
+# Exit codes: 0=success, 111=temp fail (retry), 100=perm fail (bounce)
+
+LMTP_HOST="${LMTP_HOST:-dovecot}"
+LMTP_PORT="${LMTP_PORT:-24}"
+RECIPIENT="${EXT}@${HOST}"
+
+[ -z "$EXT" ] || [ -z "$HOST" ] && { echo "lmtp-deliver: EXT/HOST not set" >&2; exit 100; }
+
+# Read message to temp file
+MSG=$(mktemp)
+trap 'rm -f "$MSG"' EXIT
+cat > "$MSG"
+[ -s "$MSG" ] || { echo "lmtp-deliver: empty message" >&2; exit 100; }
+
+# Open TCP connection using bash /dev/tcp
+exec 3<>/dev/tcp/"$LMTP_HOST"/"$LMTP_PORT" 2>/dev/null || {
+    echo "lmtp-deliver: connection failed" >&2
+    exit 111
+}
+
+# Helper: read response, check code
+read_resp() {
+    local line
+    while IFS= read -r line <&3; do
+        line="${line%$'\r'}"  # Strip CR
+        case "$line" in
+            "$1"*) return 0 ;;
+            "${1%?}-"*) ;;  # Multi-line continuation (e.g., 250-)
+            4*) echo "lmtp-deliver: temp fail: $line" >&2; exit 111 ;;
+            5*) echo "lmtp-deliver: perm fail: $line" >&2; exit 100 ;;
+            *)  echo "lmtp-deliver: unexpected: $line" >&2; exit 111 ;;
+        esac
+    done
+    exit 111  # Connection closed unexpectedly
+}
+
+# LMTP conversation
+read_resp 220                           # Greeting
+echo "LHLO qmail" >&3
+read_resp 250                           # LHLO response
+echo "MAIL FROM:<${SENDER}>" >&3
+read_resp 250
+echo "RCPT TO:<${RECIPIENT}>" >&3
+read_resp 250
+echo "DATA" >&3
+read_resp 354
+
+# Send message (dot-stuff lines starting with .)
+sed 's/^\.\(..*\)/\.\.\1/' "$MSG" >&3
+echo "." >&3
+read_resp 250                           # Delivery confirmation
+
+echo "QUIT" >&3
+exec 3>&-
+
+exit 0

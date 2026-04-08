@@ -154,10 +154,10 @@ if [ ! -f "$CONTROL/me" ]; then
     printf '%s' "$QMAIL_GREETDELAY"          > "$CONTROL/greetdelay"
     printf '%s' "$QMAIL_SURBL"               > "$CONTROL/surbl"
 
-    # Deliver via Dovecot-LDA so Sieve filters run on every inbound message.
-    # qmail-local sets $EXT (local part) and $HOST (domain) which dovecot-lda
-    # uses to look up the user in the static userdb.
-    printf '|/usr/lib/dovecot/dovecot-lda -d "$EXT@$HOST" -f "$SENDER"\n' \
+    # Deliver via LMTP to Dovecot container. Sieve filters run on delivery.
+    # qmail-local sets $EXT (local part) and $HOST (domain) which the
+    # lmtp-deliver script uses to construct the recipient address.
+    printf '|/var/qmail/bin/lmtp-deliver\n' \
         > "$CONTROL/defaultdelivery"
 
     # Global Sieve script directories — drop .sieve files here for server-wide
@@ -352,9 +352,9 @@ fi
 if [ -n "$QMAIL_DOMAIN" ] && [ ! -d "/srv/mail/vpopmail/domains/$QMAIL_DOMAIN" ]; then
     echo "qmail: creating vpopmail domain $QMAIL_DOMAIN"
     /home/vpopmail/bin/vadddomain "$QMAIL_DOMAIN"
-    # vadddomain writes a vdelivermail .qmail-default — replace with dovecot-lda
-    # so Sieve filters run on every delivery to this domain.
-    printf '|/usr/lib/dovecot/dovecot-lda -d "$EXT@$HOST" -f "$SENDER"\n' \
+    # vadddomain writes a vdelivermail .qmail-default — replace with LMTP
+    # delivery to Dovecot so Sieve filters run on every delivery.
+    printf '|/var/qmail/bin/lmtp-deliver\n' \
         > "/home/vpopmail/domains/$QMAIL_DOMAIN/.qmail-default"
     chown vpopmail:vchkpw "/home/vpopmail/domains/$QMAIL_DOMAIN/.qmail-default"
 fi
@@ -395,6 +395,48 @@ local_name $domain {
 EOF
     done
 fi
+
+# ── Service toggles ───────────────────────────────────────────────────────────
+# Enable/disable services based on environment variables.
+# Disabled services have their symlink removed from /etc/service.
+QMAIL_SMTP=${QMAIL_SMTP:-true}
+QMAIL_SMTPS=${QMAIL_SMTPS:-true}
+QMAIL_SUBMISSION=${QMAIL_SUBMISSION:-true}
+QMAIL_HTTP=${QMAIL_HTTP:-true}
+
+echo "qmail: services enabled:"
+
+if [ "$QMAIL_SMTP" = "true" ]; then
+    echo "  - SMTP (25)"
+else
+    rm -f /etc/service/qmail-smtpd
+    echo "  - SMTP (25) [DISABLED]"
+fi
+
+if [ "$QMAIL_SMTPS" = "true" ]; then
+    echo "  - SMTPS (465)"
+else
+    rm -f /etc/service/qmail-smtps
+    echo "  - SMTPS (465) [DISABLED]"
+fi
+
+if [ "$QMAIL_SUBMISSION" = "true" ]; then
+    echo "  - Submission (587)"
+else
+    rm -f /etc/service/qmail-submission
+    echo "  - Submission (587) [DISABLED]"
+fi
+
+if [ "$QMAIL_HTTP" = "true" ]; then
+    echo "  - HTTP (80)"
+else
+    rm -f /etc/service/lighttpd
+    echo "  - HTTP (80) [DISABLED]"
+fi
+
+# qmail-send and vusaged always run (core services)
+echo "  - qmail-send (queue processor)"
+echo "  - vusaged (quota daemon)"
 
 # ── Hand off to runit ─────────────────────────────────────────────────────────
 exec /usr/bin/runsvdir -P /etc/service

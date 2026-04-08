@@ -120,24 +120,73 @@ services:
       # Password is auto-generated (and printed to stdout) if VQADMIN_PASS is empty.
       VQADMIN_USER: ${VQADMIN_USER:-admin}
       VQADMIN_PASS: ${VQADMIN_PASS:-}
+
+      # ── LMTP delivery to Dovecot container ──────────────────────────────────
+      LMTP_HOST: dovecot
+      LMTP_PORT: ${LMTP_PORT:-24}
+
+      # ── Service toggles ─────────────────────────────────────────────────────
+      # Enable/disable individual services. Disabled services don't start.
+      QMAIL_SMTP: ${QMAIL_SMTP:-true}           # Port 25 (inbound mail)
+      QMAIL_SMTPS: ${QMAIL_SMTPS:-true}         # Port 465 (implicit TLS)
+      QMAIL_SUBMISSION: ${QMAIL_SUBMISSION:-true} # Port 587 (authenticated relay)
+      QMAIL_HTTP: ${QMAIL_HTTP:-true}           # Port 80 (qmailadmin/vqadmin)
     ports:
       - "25:25"     # SMTP
       - "80:80"     # HTTP (qmailadmin)
-      - "110:110"   # POP3
-      - "143:143"   # IMAP
       - "465:465"   # SMTPS
       - "587:587"   # Submission
+    volumes:
+      # Primary volume for qmail control files, queue, vpopmail etc:
+      #   /srv/mail/qmail/control     ← /var/qmail/control
+      #   /srv/mail/qmail/queue       ← /var/qmail/queue
+      #   /srv/mail/vpopmail/etc      ← /home/vpopmail/etc
+      - maildata:/srv/mail
+      # Domain Maildirs — shared with Dovecot (both need write access)
+      - dovecot_mail:/srv/mail/vpopmail/domains
+
+  dovecot:
+    build:
+      context: ..
+      dockerfile: docker/dovecot/Dockerfile
+    image: dovecot:latest
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      qmail:
+        condition: service_started
+    environment:
+      # ── MariaDB — must match the mariadb service above ───────────────────────
+      MYSQL_HOST: mariadb
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_DB: ${MYSQL_DB:-vpopmail}
+      MYSQL_USER: ${MYSQL_USER:-vpopmail}
+      MYSQL_PASS: ${MYSQL_PASS:-changeme}
+
+      # ── Service toggles ─────────────────────────────────────────────────────
+      # Enable/disable individual protocols. Disabled services don't listen.
+      # Default: SSL ports enabled, plain ports disabled.
+      DOVECOT_IMAP: ${DOVECOT_IMAP:-false}    # Port 143 (plaintext)
+      DOVECOT_IMAPS: ${DOVECOT_IMAPS:-true}   # Port 993 (SSL)
+      DOVECOT_POP3: ${DOVECOT_POP3:-false}    # Port 110 (plaintext)
+      DOVECOT_POP3S: ${DOVECOT_POP3S:-true}   # Port 995 (SSL)
+      DOVECOT_SIEVE: ${DOVECOT_SIEVE:-true}   # Port 4190 (ManageSieve)
+      DOVECOT_LMTP: ${DOVECOT_LMTP:-true}     # Port 24 (internal, for qmail)
+    ports:
+      - "110:110"   # POP3 (disabled by default)
+      - "143:143"   # IMAP (disabled by default)
       - "993:993"   # IMAPS
       - "995:995"   # POP3S
       - "4190:4190" # ManageSieve
+      # LMTP port 24 is NOT exposed — only reachable from qmail container
     volumes:
-      # Single volume — entrypoint seeds subdirs and symlinks on first run:
-      #   /srv/mail/qmail/control     ← /var/qmail/control
-      #   /srv/mail/qmail/queue       ← /var/qmail/queue
-      #   /srv/mail/vpopmail/domains  ← /home/vpopmail/domains
-      #   /srv/mail/vpopmail/etc      ← /home/vpopmail/etc
-      - maildata:/srv/mail
+      # Domain Maildirs — shared with qmail (both need write access)
+      - dovecot_mail:/srv/mail/vpopmail/domains
+      # Read-only access to qmail control files (TLS certs, Sieve scripts)
+      - maildata:/srv/qmail:ro
 
 volumes:
   maildata:
+  dovecot_mail:
   mariadb_data:
