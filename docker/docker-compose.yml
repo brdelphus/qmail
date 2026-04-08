@@ -125,7 +125,7 @@ services:
       SIMSCAN_ENABLE: ${SIMSCAN_ENABLE:-true}
       # simcontrol is written on first run from these vars; edit
       # /var/qmail/simscan/simcontrol directly for per-domain overrides.
-      SIMSCAN_CLAM: ${SIMSCAN_CLAM:-yes}             # ClamAV scanning (yes/no)
+      SIMSCAN_CLAM: ${SIMSCAN_CLAM:-no}              # ClamAV scanning — disabled; rspamd owns AV via antivirus module
       SIMSCAN_SPAM: ${SIMSCAN_SPAM:-yes}             # Rspamd spam scanning (yes/no)
       # Tag-only mode — rspamd is called and headers are added, but simscan never
       # rejects based on spam score. ClamAV blocking is unaffected.
@@ -194,6 +194,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      clamav:
+        condition: service_started   # service_healthy would block for ~5 min (definition load)
     environment:
       # Web UI password — generate hash with: docker compose exec rspamd rspamadm pw
       # Then replace this with the $2$... hash in rspamd/local.d/worker-controller.inc
