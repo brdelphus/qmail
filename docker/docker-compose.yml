@@ -127,6 +127,9 @@ services:
       # /var/qmail/simscan/simcontrol directly for per-domain overrides.
       SIMSCAN_CLAM: ${SIMSCAN_CLAM:-yes}             # ClamAV scanning (yes/no)
       SIMSCAN_SPAM: ${SIMSCAN_SPAM:-yes}             # Rspamd spam scanning (yes/no)
+      # Tag-only mode — rspamd is called and headers are added, but simscan never
+      # rejects based on spam score. ClamAV blocking is unaffected.
+      RSPAMD_TAG_ONLY: ${RSPAMD_TAG_ONLY:-false}
       SIMSCAN_SPAM_HITS: ${SIMSCAN_SPAM_HITS:-9.0}   # Spam score threshold
       SIMSCAN_SIZE_LIMIT: ${SIMSCAN_SIZE_LIMIT:-20000000}  # Max message bytes to scan (0=unlimited)
       SIMSCAN_ATTACH: ${SIMSCAN_ATTACH:-}            # Blocked extensions, semicolon-separated e.g. ".vbs;.lnk;.scr"

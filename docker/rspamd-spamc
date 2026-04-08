@@ -3,7 +3,12 @@
 # Reads a mail message from stdin, queries rspamd, prepends X-Spam-* headers,
 # and outputs the modified message. Exit 0=ham/passthru, 1=spam.
 #
-# Env: RSPAMD_HOST (default: rspamd), RSPAMD_PORT (default: 11333)
+# Env:
+#   RSPAMD_HOST      (default: rspamd)
+#   RSPAMD_PORT      (default: 11333)
+#   RSPAMD_TAG_ONLY  (default: false) — when true, always exit 0 regardless of
+#                    rspamd verdict; headers are still added so Sieve rules and
+#                    IMAPSieve learning work, but simscan never rejects.
 
 RSPAMD_HOST="${RSPAMD_HOST:-rspamd}"
 RSPAMD_PORT="${RSPAMD_PORT:-11333}"
@@ -37,6 +42,12 @@ case "$ACTION" in
     *)
         FLAG=NO  ; RC=0 ;;
 esac
+
+# Tag-only mode — headers are kept so Sieve rules and IMAPSieve learning work,
+# but simscan is never told to reject.
+if [ "${RSPAMD_TAG_ONLY:-false}" = "true" ]; then
+    RC=0
+fi
 
 # Insert X-Spam-* headers before the blank line (header/body separator)
 awk -v flag="$FLAG" -v score="$SCORE" -v req="$REQUIRED" '
