@@ -192,6 +192,29 @@ User moves message out of Junk/Spam (not to Trash)
 
 ---
 
+## Step 7 — Tika (attachment text extraction for rspamd)
+
+[Apache Tika](https://tika.apache.org) runs as a server and extracts plain text
+from binary attachments (PDF, DOCX, XLSX, etc.). rspamd has built-in Tika
+support — it submits attachments to Tika over HTTP and applies spam rules to
+the extracted content. This catches spam and phishing payloads hidden inside
+documents that would otherwise be opaque to content filters.
+
+```
+simscan → rspamd :11333
+              └── attachment (PDF/DOCX/…)
+                    └── HTTP → tika :9998 → extracted text
+                                              └── rspamd rules / Bayes
+```
+
+- [ ] Add `apache/tika` container to `docker-compose.yml` (port 9998, internal only)
+- [ ] Add `docker/rspamd/local.d/tika.conf`: `url = "http://tika:9998";`
+- [ ] Add healthcheck for tika container
+- [ ] Wire `tika` into rspamd `depends_on` (or let rspamd connect lazily on first use)
+- [ ] Document `TIKA_*` env vars if any tuning is needed (heap size, timeout)
+
+---
+
 ## Final compose stack
 
 ```
@@ -201,4 +224,5 @@ mariadb      — vpopmail user/domain/password/quota data         port:  3306  (
 clamav       — clamd antivirus                                  port:  3310  (internal)
 rspamd       — spam filtering, DKIM verify, DMARC, RBL          port:  11334 (web UI)
 redis        — Rspamd Bayes + fuzzy state                       port:  6379  (internal)
+tika         — attachment text extraction for rspamd            port:  9998  (internal)
 ```
