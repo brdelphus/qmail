@@ -17,10 +17,14 @@ export DROP_PRE_GREET=1
 # SURBL — configurable via control/surbl (default: 0 = disabled)
 export SURBL=$(cat $QMAILDIR/control/surbl 2>/dev/null || echo 0)
 
-# DKIM verification for inbound mail
+# DKIM verification for inbound mail; simscan (AV + spam) runs after
 export QMAILQUEUE=$QMAILDIR/bin/qmail-dkim
 export DKIMVERIFY="FGHKLMNOQRTVWp"
 export RELAYCLIENT_NODKIMVERIFY=1
+if [ "${SIMSCAN_ENABLE:-true}" = "true" ]; then
+    export DKIMQUEUE=$QMAILDIR/bin/simscan
+    export SIMSCAN_DEBUG=${SIMSCAN_DEBUG:-0}
+fi
 
 if [ ! -f $QMAILDIR/control/smtpplugins ] || [ ! -d $QMAILDIR/plugins ]; then
     export ENABLE_SPP=0

@@ -2,10 +2,18 @@
 
 Containerised build of [sagredo-dev/qmail](https://github.com/sagredo-dev/qmail) —
 a heavily patched netqmail-1.06 with TLS, DKIM, SPF, SRS, SMTP AUTH, chkuser,
-SURBL, greylisting and more — running under **runit** on **Debian bookworm-slim**.
+SURBL, greylisting, simscan and more — running under **runit** on **Debian bookworm-slim**.
 
-The compose stack runs two containers: **qmail** (MTA) and **mariadb** (vpopmail
-auth backend). Dovecot, ClamAV, Rspamd, and Redis are planned — see `TODO.md`.
+The compose stack runs six containers:
+
+| Container | Role | Ports |
+|---|---|---|
+| **qmail** | MTA — SMTP, submission, qmailadmin, vqadmin, simscan | 25, 80, 465, 587 |
+| **dovecot** | IMAP/POP3/ManageSieve, LMTP delivery endpoint | 110, 143, 993, 995, 4190 |
+| **mariadb** | vpopmail auth/quota backend | internal |
+| **clamav** | `clamd` + `freshclam` antivirus | internal :3310 |
+| **rspamd** | Spam filtering, DKIM verify, DMARC, RBL, Bayes | :11334 (web UI) |
+| **redis** | Rspamd Bayes + fuzzy state | internal |
 
 ---
 
@@ -17,7 +25,7 @@ previous one being installed:
 ```
 fehQlibs → ucspi-tcp6 → ucspi-ssl → libsrs2 → netqmail → vpopmail → autorespond
          → patched qmail → jgreylist → spp-greylisting + ifauthskip
-         → ezmlm-idx → qmailadmin → vqadmin
+         → ripMIME → simscan → ezmlm-idx → qmailadmin → vqadmin
 ```
 
 | Step | Why it must come first |
@@ -32,6 +40,8 @@ fehQlibs → ucspi-tcp6 → ucspi-ssl → libsrs2 → netqmail → vpopmail → 
 | **patched qmail** | overwrites netqmail binaries |
 | **jgreylist** | file-based greylisting wrapper compiled into `/var/qmail/bin/` |
 | **spp-greylisting + ifauthskip** | MySQL-backed greylisting plugin + auth-skip plugin compiled into `/var/qmail/plugins/` |
+| **ripMIME** | MIME extractor required by simscan for attachment scanning |
+| **simscan** | `qmail-queue` filter — scans via ClamAV + Rspamd before queueing |
 | **ezmlm-idx** | mailing list manager, used by qmailadmin |
 | **qmailadmin** | web UI for domain/user management |
 | **vqadmin** | system-level domain admin |
@@ -74,6 +84,7 @@ On first run the entrypoint will:
 - Generate DKIM keys for `QMAIL_DOMAIN`
 - Create the primary vpopmail domain
 - Set up tcprules CDB files
+- Write `simscan/simcontrol` from `SIMSCAN_*` env vars and compile with `simscanmk`
 
 ### 3. Add the first mail user
 
@@ -172,15 +183,19 @@ All mutable data lives under **named volumes** mounted at fixed paths.
 On first run the entrypoint seeds each subdirectory from the image defaults
 and replaces the original paths with symlinks.
 
-| Volume path | Symlinked from | Contents |
+| Volume | Mount path | Contents |
 |---|---|---|
-| `/srv/mail/qmail/control` | `/var/qmail/control` | Control files, TLS certs, DKIM keys, tcprules CDBs, Sieve globals |
-| `/srv/mail/qmail/queue` | `/var/qmail/queue` | Mail queue |
-| `/srv/mail/qmail/overlimit` | `/var/qmail/overlimit` | Per-user send-rate counters (rcptcheck-overlimit) |
-| `/srv/mail/jgreylist` | `/var/qmail/jgreylist` | jgreylist state files |
-| `/srv/mail/vpopmail/domains` | `/home/vpopmail/domains` | Virtual domain mailboxes (Maildir) |
-| `/srv/mail/vpopmail/etc` | `/home/vpopmail/etc` | vpopmail config and DB connection strings |
-| *(mariadb_data)* | `/var/lib/mysql` | MariaDB data directory |
+| `maildata:/srv/mail/qmail/control` | `/var/qmail/control` | Control files, TLS certs, DKIM keys, tcprules CDBs, Sieve globals |
+| `maildata:/srv/mail/qmail/queue` | `/var/qmail/queue` | Mail queue |
+| `maildata:/srv/mail/qmail/overlimit` | `/var/qmail/overlimit` | Per-user send-rate counters |
+| `maildata:/srv/mail/qmail/simscan` | `/var/qmail/simscan` | `simcontrol` + compiled `simcontrol.cdb` |
+| `maildata:/srv/mail/jgreylist` | `/var/qmail/jgreylist` | jgreylist state files |
+| `maildata:/srv/mail/vpopmail/domains` | `/home/vpopmail/domains` | Virtual domain Maildirs (shared with Dovecot) |
+| `maildata:/srv/mail/vpopmail/etc` | `/home/vpopmail/etc` | vpopmail config and DB connection strings |
+| `mariadb_data` | `/var/lib/mysql` | MariaDB data directory |
+| `clamav_data` | `/var/lib/clamav` | ClamAV virus definitions (~250 MB) |
+| `rspamd_data` | `/var/lib/rspamd` | Rspamd state and learned data |
+| `redis_data` | `/data` | Redis Bayes + fuzzy hash state |
 
 ### Backup
 
@@ -257,7 +272,6 @@ automatically. See `.env.example` for a fully commented reference.
 | `UNSIGNED_SUBJECT` | `1` | Allow DKIM-signed mail where Subject is absent from `h=` tag |
 | `HELO_DNS_CHECK` | — | HELO hostname DNS validation modes (e.g. `PLRIV`) |
 | `REJECTNULLSENDERS` | — | Reject messages with empty envelope sender (`<>`) when set |
-| `SIMSCAN_DEBUG` | — | simscan debug level `0`–`4` (requires simscan — Step 5 in TODO.md) |
 
 ### TLS
 
@@ -316,17 +330,18 @@ automatically. See `.env.example` for a fully commented reference.
 
 ## Runit services
 
-The container runs seven supervised services under `runsvdir`:
+The **qmail** container runs six supervised services under `runsvdir`:
 
 | Service | Port | Notes |
 |---|---|---|
-| `qmail-smtpd` | 25 | chkuser, SPF, SURBL, DKIM verify, greet delay, optional jgreylist + spp greylisting |
-| `qmail-send` | — | Queue manager; DKIM signing via `control/filterargs` |
-| `qmail-submission` | 587 | Auth required (`SMTPAUTH=!`), `FORCETLS=1`, rate limiting |
-| `qmail-smtps` | 465 | Auth required, implicit TLS via `sslserver`, rate limiting |
-| `dovecot` | 110/143/993/995/4190 | POP3(S), IMAP(S), ManageSieve — `vchkpw` auth, Sieve filtering. Pinned to 2.3.x |
+| `qmail-smtpd` | 25 | chkuser, SPF, SURBL, DKIM verify → simscan → queue; optional jgreylist + spp greylisting |
+| `qmail-send` | — | Queue manager; DKIM signing via `control/filterargs` at remote delivery |
+| `qmail-submission` | 587 | Auth required (`SMTPAUTH=!`), `FORCETLS=1`, rate limiting, simscan |
+| `qmail-smtps` | 465 | Auth required, implicit TLS via `sslserver`, rate limiting, simscan |
 | `lighttpd` | 80 | qmailadmin + vqadmin CGI |
 | `vusaged` | — | vpopmail quota usage daemon |
+
+IMAP/POP3/Sieve run in the **dovecot** container (see Dovecot section below).
 
 Logs are written via `svlogd` to `/var/log/qmail/<service>/`.
 
@@ -549,13 +564,43 @@ docker compose -f docker/docker-compose.yml exec qmail \
 
 ---
 
+## Dovecot
+
+Dovecot runs in its own container with SQL authentication against MariaDB (no
+`vchkpw` binary needed). Mail is delivered from qmail via **LMTP** on TCP port 24:
+
+```
+qmail-local → /var/qmail/bin/lmtp-deliver → dovecot :24 → Sieve → Maildir
+```
+
+### Dovecot service toggles
+
+| Variable | Default | Description |
+|---|---|---|
+| `DOVECOT_IMAP` | `false` | IMAP on port 143 (plaintext) |
+| `DOVECOT_IMAPS` | `true` | IMAP over TLS on port 993 |
+| `DOVECOT_POP3` | `false` | POP3 on port 110 (plaintext) |
+| `DOVECOT_POP3S` | `true` | POP3 over TLS on port 995 |
+| `DOVECOT_SIEVE` | `true` | ManageSieve on port 4190 |
+| `DOVECOT_LMTP` | `true` | LMTP listener on port 24 (required for mail delivery) |
+
+### Dovecot rspamd env vars
+
+| Variable | Default | Description |
+|---|---|---|
+| `RSPAMD_HOST` | `rspamd` | rspamd container hostname for spam/ham learning |
+| `RSPAMD_PORT` | `11333` | rspamd HTTP API port |
+| `RSPAMD_PASSWORD` | `changeme_rspamd` | rspamd controller password (same as `RSPAMD_PASSWORD` in the rspamd service) |
+
+---
+
 ## Sieve filtering and ManageSieve
 
-Mail is delivered via **Dovecot-LDA**, enabling Sieve filtering on every
+Mail is delivered via **Dovecot LMTP**, enabling Sieve filtering on every
 inbound message:
 
 ```
-qmail-local → .qmail-default → dovecot-lda → Sieve → Maildir
+qmail-local → lmtp-deliver → dovecot LMTP :24 → Sieve → Maildir
 ```
 
 ManageSieve (port 4190) lets mail clients upload and manage Sieve scripts.
@@ -573,7 +618,7 @@ docker compose -f docker/docker-compose.yml exec qmail \
     sievec /var/qmail/control/sieve/before.d/10-spam.sieve
 ```
 
-Example spam-to-Junk script:
+Example spam-to-Junk script — pairs with the IMAPSieve learning below:
 
 ```sieve
 require ["fileinto", "mailbox"];
@@ -582,6 +627,125 @@ if header :contains "X-Spam-Flag" "YES" {
     stop;
 }
 ```
+
+### Spam/ham learning via folder moves (IMAPSieve)
+
+Moving a message **into** `Junk` or `Spam` via IMAP triggers rspamd Bayes
+learning automatically — no client plugin needed. Moving it back out (not to
+Trash) teaches ham.
+
+```
+Move to Junk/Spam   →  curl POST rspamd:11333/learn_spam  (User: alice@example.com)
+Move out of Junk    →  curl POST rspamd:11333/learn_ham   (User: alice@example.com)
+```
+
+The authenticated IMAP username is captured by the Sieve script and forwarded
+as a `User:` header so rspamd maintains **per-user Bayes** state in Redis.
+Users whose mail habits differ (e.g. mailing-list heavy vs. transactional)
+each train their own classifier without cross-contamination.
+
+The scripts live in the image at `/etc/dovecot/sieve/` and are pre-compiled at
+build time. rspamd credentials are written to `/etc/dovecot/sieve/rspamd.env`
+(mode `0600`) at container start from the `RSPAMD_*` env vars — they never
+appear in the scripts themselves.
+
+---
+
+## ClamAV + simscan
+
+[ClamAV](https://www.clamav.net) runs `clamd` + `freshclam` in its own container.
+[Simscan](https://github.com/sagredo-dev/simscan) is a `qmail-queue` wrapper
+built into the qmail image that calls ClamAV and Rspamd before accepting a message.
+
+### Delivery chain
+
+```
+qmail-smtpd
+  → QMAILQUEUE=qmail-dkim  (DKIM verification)
+  → DKIMQUEUE=simscan       (when SIMSCAN_ENABLE=true)
+      ├── /usr/bin/clamdscan ──INSTREAM──► clamd :3310
+      └── /usr/local/bin/rspamd-spamc ────HTTP──► rspamd :11333
+  → /var/qmail/bin/qmail-queue
+```
+
+`clamdscan` is a Python3 INSTREAM client (ClamAV 1.x removed the standalone
+binary). Both scanners fail open — if the remote daemon is unreachable, mail
+passes through unscanned rather than being rejected.
+
+### Simscan env vars
+
+| Variable | Default | Description |
+|---|---|---|
+| `SIMSCAN_ENABLE` | `true` | Master toggle — `false` bypasses simscan on all ports |
+| `SIMSCAN_CLAM` | `yes` | ClamAV scanning |
+| `SIMSCAN_SPAM` | `yes` | Rspamd spam scanning |
+| `SIMSCAN_SPAM_HITS` | `9.0` | Spam score rejection threshold |
+| `SIMSCAN_SIZE_LIMIT` | `20000000` | Max bytes to scan (`0`=unlimited) |
+| `SIMSCAN_ATTACH` | — | Blocked attachment extensions, semicolon-separated (e.g. `.vbs;.lnk;.scr`) |
+| `SIMSCAN_DEBUG` | `0` | Debug verbosity 0–4 |
+| `CLAMD_HOST` | `clamav` | clamd container hostname |
+| `CLAMD_PORT` | `3310` | clamd TCP port |
+
+These are written into `/var/qmail/simscan/simcontrol` on first run. To apply
+changes on an existing volume, delete the file and restart, or edit it directly
+for per-domain overrides:
+
+```
+# Format: [user@]domain:option=value,...
+user@example.com:clam=yes,spam=yes,spam_hits=6.0,attach=.vbs:.lnk:.scr
+example.com:clam=yes,spam=yes,spam_hits=7.0
+:clam=yes,spam=yes,spam_hits=9.0,size_limit=20000000
+```
+
+After editing, recompile:
+
+```sh
+docker compose -f docker/docker-compose.yml exec qmail \
+    /var/qmail/bin/simscanmk
+```
+
+---
+
+## Rspamd
+
+[Rspamd](https://rspamd.com) handles spam scoring, DKIM verification, DMARC,
+SPF, RBL checks, and Bayes learning (state in Redis). It is called by simscan
+via the `rspamd-spamc` wrapper over the HTTP API on port 11333.
+
+Web UI is available at `http://<host>:11334/`.
+
+### Rspamd env var
+
+| Variable | Default | Description |
+|---|---|---|
+| `RSPAMD_PASSWORD` | `changeme_rspamd` | Web UI password — generate hash with `docker compose exec rspamd rspamadm pw` |
+| `RSPAMD_HOST` | `rspamd` | rspamd container hostname (used by rspamd-spamc wrapper) |
+| `RSPAMD_PORT` | `11333` | rspamd HTTP API port |
+
+### Setting a proper web UI password
+
+```sh
+docker compose -f docker/docker-compose.yml exec rspamd rspamadm pw
+# Copy the $2$... hash, then write it to:
+# docker/rspamd/local.d/worker-controller.inc
+```
+
+```
+password = "$2$...hash...";
+enable_password = "$2$...hash...";
+```
+
+### Rspamd local config
+
+Custom overrides go in `docker/rspamd/local.d/` — mounted read-only into the
+container. Files present:
+
+| File | Purpose |
+|---|---|
+| `redis.conf` | Redis backend for all modules |
+| `classifier-bayes.conf` | Bayes with Redis + autolearn |
+| `greylist.conf` | Greylisting disabled (qmail-spp handles it) |
+| `dkim_signing.conf` | DKIM signing disabled (qmail-dkim handles it) |
 
 ---
 

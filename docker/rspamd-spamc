@@ -1,0 +1,52 @@
+#!/bin/sh
+# rspamd-spamc — spamc-compatible wrapper using rspamc for simscan integration.
+# Reads a mail message from stdin, queries rspamd, prepends X-Spam-* headers,
+# and outputs the modified message. Exit 0=ham/passthru, 1=spam.
+#
+# Env: RSPAMD_HOST (default: rspamd), RSPAMD_PORT (default: 11333)
+
+RSPAMD_HOST="${RSPAMD_HOST:-rspamd}"
+RSPAMD_PORT="${RSPAMD_PORT:-11333}"
+TMPFILE=$(mktemp /tmp/rspamd-spamc.XXXXXX)
+trap 'rm -f "$TMPFILE"' EXIT
+
+cat > "$TMPFILE"
+
+RESULT=$(/usr/bin/rspamc -h "${RSPAMD_HOST}:${RSPAMD_PORT}" < "$TMPFILE" 2>/dev/null)
+if [ $? -ne 0 ] || [ -z "$RESULT" ]; then
+    # rspamd unavailable — pass through without marking
+    cat "$TMPFILE"
+    exit 0
+fi
+
+# Parse "Score: 1.30 / 15.00" (handles both inline and separate-line formats)
+SCORE_LINE=$(printf '%s\n' "$RESULT" | grep -i 'score:' | head -1)
+SCORE=$(printf '%s\n' "$SCORE_LINE" | grep -oE '[0-9]+\.[0-9]+' | head -1)
+REQUIRED=$(printf '%s\n' "$SCORE_LINE" | grep -oE '[0-9]+\.[0-9]+' | tail -1)
+
+# Parse "Action: no action" or "Metric default; Action: spam; ..."
+ACTION=$(printf '%s\n' "$RESULT" | grep -i 'action:' | head -1 \
+    | sed 's/.*[Aa]ction:[[:space:]]*//' | sed 's/[;].*//' | tr -d '\r\n')
+
+SCORE="${SCORE:-0}"
+REQUIRED="${REQUIRED:-15.0}"
+
+case "$ACTION" in
+    reject|"add header"|"rewrite subject"|greylist)
+        FLAG=YES ; RC=1 ;;
+    *)
+        FLAG=NO  ; RC=0 ;;
+esac
+
+# Insert X-Spam-* headers before the blank line (header/body separator)
+awk -v flag="$FLAG" -v score="$SCORE" -v req="$REQUIRED" '
+    !done && /^$/ {
+        print "X-Spam-Flag: " flag
+        print "X-Spam-Status: " (flag == "YES" ? "Yes" : "No") \
+              ", score=" score " required=" req " tests=rspamd"
+        done = 1
+    }
+    { print }
+' "$TMPFILE"
+
+exit $RC

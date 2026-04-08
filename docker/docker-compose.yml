@@ -75,8 +75,7 @@ services:
       # REJECTNULLSENDERS: ${REJECTNULLSENDERS:-}
       # Allow DKIM-signed messages where Subject is not in the h= tag (default: 1)
       UNSIGNED_SUBJECT: ${UNSIGNED_SUBJECT:-1}
-      # simscan debug level 0-4 (future: requires simscan installed)
-      # SIMSCAN_DEBUG: ${SIMSCAN_DEBUG:-0}
+
 
       # ── TLS ──────────────────────────────────────────────────────────────────
       # Leave empty to generate a self-signed cert on first run.
@@ -121,6 +120,24 @@ services:
       VQADMIN_USER: ${VQADMIN_USER:-admin}
       VQADMIN_PASS: ${VQADMIN_PASS:-}
 
+      # ── simscan (AV + spam via ClamAV + Rspamd) ──────────────────────────────
+      # Master toggle — false bypasses simscan entirely (qmail-dkim → qmail-queue direct)
+      SIMSCAN_ENABLE: ${SIMSCAN_ENABLE:-true}
+      # simcontrol is written on first run from these vars; edit
+      # /var/qmail/simscan/simcontrol directly for per-domain overrides.
+      SIMSCAN_CLAM: ${SIMSCAN_CLAM:-yes}             # ClamAV scanning (yes/no)
+      SIMSCAN_SPAM: ${SIMSCAN_SPAM:-yes}             # Rspamd spam scanning (yes/no)
+      SIMSCAN_SPAM_HITS: ${SIMSCAN_SPAM_HITS:-9.0}   # Spam score threshold
+      SIMSCAN_SIZE_LIMIT: ${SIMSCAN_SIZE_LIMIT:-20000000}  # Max message bytes to scan (0=unlimited)
+      SIMSCAN_ATTACH: ${SIMSCAN_ATTACH:-}            # Blocked extensions, semicolon-separated e.g. ".vbs;.lnk;.scr"
+      SIMSCAN_DEBUG: ${SIMSCAN_DEBUG:-0}             # Debug level 0-4
+      # clamdscan-wrapper connects to the clamav container INSTREAM API
+      CLAMD_HOST: clamav
+      CLAMD_PORT: ${CLAMD_PORT:-3310}
+      # rspamd-spamc wrapper connects to the rspamd container HTTP API
+      RSPAMD_HOST: rspamd
+      RSPAMD_PORT: ${RSPAMD_PORT:-11333}
+
       # ── LMTP delivery to Dovecot container ──────────────────────────────────
       LMTP_HOST: dovecot
       LMTP_PORT: ${LMTP_PORT:-24}
@@ -145,6 +162,46 @@ services:
       # Domain Maildirs — shared with Dovecot (both need write access)
       - dovecot_mail:/srv/mail/vpopmail/domains
 
+  clamav:
+    image: clamav/clamav:latest
+    restart: unless-stopped
+    volumes:
+      - clamav_data:/var/lib/clamav
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/clamdcheck.sh"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 300s   # ClamAV loads ~250 MB of virus definitions on startup
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rspamd:
+    image: rspamd/rspamd:latest
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      # Web UI password — generate hash with: docker compose exec rspamd rspamadm pw
+      # Then replace this with the $2$... hash in rspamd/local.d/worker-controller.inc
+      RSPAMD_PASSWORD: ${RSPAMD_PASSWORD:-changeme_rspamd}
+    volumes:
+      - ./rspamd/local.d:/etc/rspamd/local.d:ro
+      - rspamd_data:/var/lib/rspamd
+    ports:
+      - "11334:11334"   # Web UI
+      # port 783 (spamc) is internal only — qmail/simscan connects over the compose network
+
   dovecot:
     build:
       context: ..
@@ -163,6 +220,13 @@ services:
       MYSQL_DB: ${MYSQL_DB:-vpopmail}
       MYSQL_USER: ${MYSQL_USER:-vpopmail}
       MYSQL_PASS: ${MYSQL_PASS:-changeme}
+
+      # ── Rspamd — for IMAPSieve spam/ham learning ──────────────────────────────
+      # Dovecot pipes messages to rspamd /learn_spam or /learn_ham when the user
+      # moves mail to/from the Junk or Spam folder.
+      RSPAMD_HOST: rspamd
+      RSPAMD_PORT: ${RSPAMD_PORT:-11333}
+      RSPAMD_PASSWORD: ${RSPAMD_PASSWORD:-changeme_rspamd}
 
       # ── Service toggles ─────────────────────────────────────────────────────
       # Enable/disable individual protocols. Disabled services don't listen.
@@ -190,3 +254,6 @@ volumes:
   maildata:
   dovecot_mail:
   mariadb_data:
+  clamav_data:
+  redis_data:
+  rspamd_data:

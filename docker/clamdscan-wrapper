@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""
+clamdscan-wrapper — ClamAV INSTREAM client for simscan.
+Replaces the removed clamdscan binary (ClamAV 1.x).
+Connects to clamd over TCP and streams the file for scanning.
+
+Usage: clamdscan [options] <file>   (options are accepted but ignored)
+Exit:  0 = clean, 1 = virus found, 2 = error (pass-through on clamd down)
+Env:   CLAMD_HOST (default: clamav), CLAMD_PORT (default: 3310)
+"""
+import sys, os, socket, struct
+
+HOST = os.environ.get('CLAMD_HOST', 'clamav')
+PORT = int(os.environ.get('CLAMD_PORT', '3310'))
+CHUNK = 4096
+
+def scan(path):
+    try:
+        with open(path, 'rb') as f:
+            data = f.read()
+    except OSError as e:
+        print(f'clamdscan: cannot read {path}: {e}', file=sys.stderr)
+        return 2
+
+    try:
+        with socket.create_connection((HOST, PORT), timeout=30) as s:
+            s.sendall(b'zINSTREAM\0')
+            for i in range(0, len(data), CHUNK):
+                chunk = data[i:i + CHUNK]
+                s.sendall(struct.pack('!I', len(chunk)) + chunk)
+            s.sendall(struct.pack('!I', 0))
+            resp = b''
+            while True:
+                buf = s.recv(256)
+                if not buf:
+                    break
+                resp += buf
+                if b'\0' in buf or b'\n' in buf:
+                    break
+    except OSError as e:
+        # clamd unavailable — pass through to avoid blocking mail
+        print(f'clamdscan: clamd unreachable ({HOST}:{PORT}): {e}', file=sys.stderr)
+        return 0
+
+    result = resp.decode('utf-8', errors='replace').strip('\0').strip()
+    print(result)
+    if 'FOUND' in result:
+        return 1
+    if 'ERROR' in result:
+        return 2
+    return 0
+
+# Last non-flag argument is the file to scan
+path = next((a for a in reversed(sys.argv[1:]) if not a.startswith('-')), None)
+if not path:
+    print('clamdscan: no file specified', file=sys.stderr)
+    sys.exit(2)
+
+sys.exit(scan(path))

@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libmariadb3 \
         netcat-openbsd \
         ca-certificates \
+        curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Create vpopmail user/group with same UID/GID as qmail container.
@@ -35,8 +36,16 @@ COPY docker/dovecot/dovecot.conf /etc/dovecot/dovecot.conf
 COPY docker/dovecot/dovecot-sql.conf.ext /etc/dovecot/dovecot-sql.conf.ext
 COPY docker/dovecot/entrypoint.sh /entrypoint.sh
 COPY docker/dovecot/healthcheck.sh /healthcheck.sh
+# IMAPSieve scripts for spam/ham learning — rspamd.env written at runtime by entrypoint.sh
+COPY docker/dovecot/sieve/ /etc/dovecot/sieve/
 RUN chmod +x /entrypoint.sh /healthcheck.sh \
- && chmod 600 /etc/dovecot/dovecot-sql.conf.ext
+ && chmod 600 /etc/dovecot/dovecot-sql.conf.ext \
+ && chmod +x /etc/dovecot/sieve/scripts/learn-spam.sh \
+              /etc/dovecot/sieve/scripts/learn-ham.sh
+# Pre-compile Sieve scripts — catches syntax errors at build time and avoids
+# needing write access to /etc/dovecot/sieve/ at runtime.
+RUN sievec /etc/dovecot/sieve/learn-spam.sieve \
+ && sievec /etc/dovecot/sieve/learn-ham.sieve
 
 # Ports:
 #   110  - POP3

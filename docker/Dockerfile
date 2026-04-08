@@ -191,6 +191,51 @@ RUN mkdir -p /var/qmail/plugins \
  && cc -o /var/qmail/plugins/ifauthskip ifauthskip.c \
  && strip /var/qmail/plugins/ifauthskip
 
+# ── Step 4d: ripMIME ──────────────────────────────────────────────────────────
+# MIME attachment extractor required by simscan for --enable-attach scanning.
+WORKDIR /build
+RUN wget -q https://www.pldaniels.com/ripmime/ripmime-1.4.0.6.tar.gz \
+ && tar xzf ripmime-1.4.0.6.tar.gz \
+ && cd ripmime-1.4.0.6 \
+ && make \
+ && cp ripmime /usr/local/bin/ripMIME
+
+# simscan configure checks for clamav user, clamdscan, sigtool, spamc, and db dir.
+# Install clamav in builder to satisfy all checks (builder stage is discarded).
+RUN apt-get update && apt-get install -y --no-install-recommends clamav clamav-daemon \
+ && rm -rf /var/lib/apt/lists/* \
+ && cp /usr/src/qmail/docker/rspamd-spamc /usr/local/bin/rspamd-spamc \
+ && chmod +x /usr/local/bin/rspamd-spamc \
+ && mkdir -p /var/lib/clamav
+
+# ── Step 4e: simscan ──────────────────────────────────────────────────────────
+# qmail-queue wrapper that scans through ClamAV (clamdscan) and Rspamd
+# (rspamd-spamc wrapper calling rspamc) before calling the real qmail-queue.
+# Delivery chain: qmail-smtpd → qmail-dkim (DKIM verify, via DKIMQUEUE=simscan)
+#                 → simscan (AV + spam) → /var/qmail/bin/qmail-queue
+ARG SIMSCAN_VERSION=1.4.6.2
+RUN wget -q https://github.com/sagredo-dev/simscan/archive/refs/tags/v${SIMSCAN_VERSION}.tar.gz \
+ && tar xzf v${SIMSCAN_VERSION}.tar.gz \
+ && cd simscan-${SIMSCAN_VERSION} \
+ && ./configure \
+        --enable-user=clamav \
+        --enable-clamav=y \
+        --enable-clamdscan=/usr/bin/clamdscan \
+        --enable-spam=y \
+        --enable-spamc=/usr/local/bin/rspamd-spamc \
+        --enable-spamassassin-path=/usr/local/bin/rspamd-spamc \
+        --enable-spam-passthru=y \
+        --enable-spam-hits=9.0 \
+        --enable-per-domain=y \
+        --enable-ripmime=/usr/local/bin/ripMIME \
+        --enable-attach=y \
+        --enable-custom-smtp-reject=y \
+        --enable-spamc-user=y \
+        --enable-clamavdb-path=/var/lib/clamav \
+        --enable-received=y \
+ && make \
+ && make install
+
 # ── Step 5: ezmlm-idx ────────────────────────────────────────────────────────
 # High-speed mailing list manager for qmail.
 # Requires lang/default symlink before building.
@@ -276,6 +321,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         apache2-utils \
         netcat-openbsd \
         ca-certificates \
+        clamav \
+        clamav-daemon \
+        python3 \
+        rspamd \
     && rm -rf /var/lib/apt/lists/*
 
 # Same pinned UIDs/GIDs as builder — no ownership fix-up needed.
@@ -308,6 +357,22 @@ RUN echo '/usr/local/lib' > /etc/ld.so.conf.d/usr-local.conf \
 
 # Lighttpd config for qmailadmin CGI
 COPY docker/lighttpd.conf /etc/lighttpd/lighttpd.conf
+
+# clamdscan client config — points to the clamav container over TCP
+COPY docker/clamdscan.conf /etc/clamav/clamd.conf
+
+# clamdscan was removed in ClamAV 1.x; replace with a Python3 INSTREAM client
+COPY docker/clamdscan-wrapper /usr/bin/clamdscan
+RUN chmod +x /usr/bin/clamdscan
+
+# rspamd-spamc: spamc-compatible wrapper that calls rspamc → rspamd container
+COPY docker/rspamd-spamc /usr/local/bin/rspamd-spamc
+RUN chmod +x /usr/local/bin/rspamd-spamc \
+ && chown clamav:clamav /var/qmail/bin/simscan \
+ && chmod 4755 /var/qmail/bin/simscan \
+ && mkdir -p /var/qmail/simscan \
+ && chown clamav:clamav /var/qmail/simscan \
+ && chmod 750 /var/qmail/simscan
 
 # LMTP delivery script for qmail → Dovecot (bash, uses /dev/tcp)
 COPY docker/lmtp-deliver /var/qmail/bin/lmtp-deliver

@@ -132,6 +132,22 @@ done
 
 echo "dovecot: TLS cert found"
 
+# ── Write rspamd credentials for IMAPSieve learn scripts ─────────────────────
+# learn-spam.sh / learn-ham.sh source this file to POST to rspamd HTTP API.
+RSPAMD_HOST=${RSPAMD_HOST:-rspamd}
+RSPAMD_PORT=${RSPAMD_PORT:-11333}
+RSPAMD_PASSWORD=${RSPAMD_PASSWORD:-}
+
+mkdir -p /etc/dovecot/sieve
+cat > /etc/dovecot/sieve/rspamd.env << EOF
+RSPAMD_HOST=${RSPAMD_HOST}
+RSPAMD_PORT=${RSPAMD_PORT}
+RSPAMD_PASSWORD=${RSPAMD_PASSWORD}
+EOF
+chmod 600 /etc/dovecot/sieve/rspamd.env
+
+echo "dovecot: rspamd credentials written (${RSPAMD_HOST}:${RSPAMD_PORT})"
+
 # ── Ensure mail directories exist with correct ownership ──────────────────────
 chown -R vpopmail:vchkpw /srv/mail/vpopmail
 
