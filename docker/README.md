@@ -196,6 +196,8 @@ and replaces the original paths with symlinks.
 | `clamav_data` | `/var/lib/clamav` | ClamAV virus definitions (~250 MB) |
 | `rspamd_data` | `/var/lib/rspamd` | Rspamd state and learned data |
 | `redis_data` | `/data` | Redis Bayes + fuzzy hash state |
+| `acme_webroot` | `/var/www/acme` (qmail) | ACME HTTP-01 challenge tokens written by certbot, served by lighttpd |
+| `letsencrypt` | `/etc/letsencrypt` (qmail) | Let's Encrypt certificates and account data |
 
 ### Backup
 
@@ -277,8 +279,10 @@ automatically. See `.env.example` for a fully commented reference.
 
 | Variable | Default | Description |
 |---|---|---|
-| `QMAIL_TLS_CERT` | — | Path to TLS certificate PEM (e.g. Let's Encrypt `fullchain.pem`) |
-| `QMAIL_TLS_KEY` | — | Path to TLS private key PEM |
+| `QMAIL_TLS_CERT_B64` | — | Base64-encoded TLS certificate PEM (`base64 -w0 fullchain.pem`) — takes priority over file-path vars, no volume needed |
+| `QMAIL_TLS_KEY_B64` | — | Base64-encoded TLS private key PEM (`base64 -w0 privkey.pem`) |
+| `QMAIL_TLS_CERT` | — | Container-internal path to TLS certificate PEM — file must be accessible via a volume or bind-mount |
+| `QMAIL_TLS_KEY` | — | Container-internal path to TLS private key PEM |
 | `QMAIL_DH_BITS` | `2048` | DH parameter bit size (`2048` or `4096`) |
 | `QMAIL_TLS_CIPHERS` | `HIGH:MEDIUM:!MD5:!RC4:!3DES:!LOW:!SSLv2:!SSLv3` | Allowed TLS cipher suite |
 | `QMAIL_SNI_CERTS` | — | Semicolon-separated `domain:cert:key` triplets for SNI (see TLS section) |
@@ -358,28 +362,124 @@ Both qmail (`sslserver`) and Dovecot read a combined PEM at
 `/var/qmail/control/servercert.pem` (certificate block first, then private key).
 DH parameters are stored at `/var/qmail/control/dh4096.pem`.
 
+The entrypoint runs the cert setup on **every startup**, so a container restart
+is all that's needed to pick up a renewed certificate.
+
 | Priority | Condition | Result |
 |---|---|---|
-| 1 | `QMAIL_TLS_CERT` + `QMAIL_TLS_KEY` set | Combines the two files into `servercert.pem` |
-| 2 | `servercert.pem` already in volume | Used as-is |
-| 3 | Neither | Self-signed cert generated for `QMAIL_ME` |
+| 1 | `QMAIL_TLS_CERT_B64` + `QMAIL_TLS_KEY_B64` set | Decoded and combined into `servercert.pem` — no volume needed |
+| 2 | `QMAIL_TLS_CERT` + `QMAIL_TLS_KEY` set and files exist | Combines the two files into `servercert.pem` |
+| 3 | `QMAIL_TLS_CERT`/`KEY` set but files missing | Warning logged; falls through to next rule |
+| 4 | `servercert.pem` already in volume | Used as-is |
+| 5 | None of the above | Self-signed cert generated for `QMAIL_ME` |
 
-### Let's Encrypt
+### Option 1 — Self-signed (default)
 
+Leave `QMAIL_TLS_CERT` and `QMAIL_TLS_KEY` unset. A self-signed cert is generated
+for `QMAIL_ME` on first run. Fine for testing; mail clients will show a TLS warning.
+
+### Option 2 — Ready cert (existing PEM files)
+
+If you already have a cert from any CA (commercial, another ACME client, etc.),
+there are two ways to supply it.
+
+#### 2a — Bind-mount (files on the host)
+
+Bind-mount the host directory containing your PEM files into the container, then
+set the env vars to the **container-internal** paths.
+
+In `docker-compose.yml`, uncomment the bind-mount in the qmail `volumes` section
+and adjust the host path (left side of `:`):
 ```yaml
-environment:
-  QMAIL_TLS_CERT: /etc/letsencrypt/live/mail.example.com/fullchain.pem
-  QMAIL_TLS_KEY:  /etc/letsencrypt/live/mail.example.com/privkey.pem
-volumes:
-  - /etc/letsencrypt:/etc/letsencrypt:ro
-  - maildata:/srv/mail
+- /host/path/to/certs:/etc/ssl/mail:ro
 ```
 
-On cert renewal, restart to re-combine the PEM:
+In `.env`, point to the container-internal path (right side of `:`):
+```
+QMAIL_TLS_CERT=/etc/ssl/mail/fullchain.pem
+QMAIL_TLS_KEY=/etc/ssl/mail/privkey.pem
+```
 
+#### 2b — Inline base64 (no volume needed)
+
+Encode the PEM files and paste them directly into `.env`. Takes priority over
+the file-path vars — no bind-mount or volume required.
+
+```sh
+# On the host, generate the values:
+base64 -w0 fullchain.pem && echo
+base64 -w0 privkey.pem && echo
+```
+
+```env
+# .env
+QMAIL_TLS_CERT_B64=LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0t...
+QMAIL_TLS_KEY_B64=LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0t...
+```
+
+Useful for CI/CD pipelines, Docker secrets passed as env vars, or any environment
+where mounting host paths is inconvenient.
+
+---
+
+Restart qmail after any cert renewal to re-combine the PEM:
 ```sh
 docker compose -f docker/docker-compose.yml restart qmail
 ```
+
+### Option 3 — Let's Encrypt via certbot
+
+The compose file includes an optional `certbot` service using the **HTTP-01**
+challenge. It is gated behind the `certbot` profile and never starts with a
+plain `docker compose up`.
+
+lighttpd (port 80, already running for qmailadmin) serves the ACME challenge
+tokens from the shared `acme_webroot` volume at `/.well-known/acme-challenge/`.
+
+#### Initial setup
+
+Add to `.env`:
+```
+CERTBOT_EMAIL=you@example.com
+CERTBOT_DOMAIN=mail.yourdomain.com   # defaults to QMAIL_ME if omitted
+
+# Container-internal paths — certbot writes to the letsencrypt named volume,
+# which is mounted at /etc/letsencrypt inside the qmail container.
+QMAIL_TLS_CERT=/etc/letsencrypt/live/mail.yourdomain.com/fullchain.pem
+QMAIL_TLS_KEY=/etc/letsencrypt/live/mail.yourdomain.com/privkey.pem
+```
+
+Issue the certificate (the stack must be running and port 80 reachable):
+```sh
+docker compose -f docker/docker-compose.yml --profile certbot run --rm certbot
+```
+
+Restart qmail to install it:
+```sh
+docker compose -f docker/docker-compose.yml restart qmail
+```
+
+#### Renewal
+
+Certbot uses `--keep-until-expiring` — running it again is a no-op unless the
+cert is within 30 days of expiry. Add a cron job for automatic renewal:
+
+```
+# /etc/cron.d/certbot-qmail
+0 3 * * * root docker compose --profile certbot \
+    -f /path/to/qmail/docker/docker-compose.yml \
+    run --rm certbot \
+  && docker compose \
+    -f /path/to/qmail/docker/docker-compose.yml \
+    restart qmail
+```
+
+#### Certbot env vars
+
+| Variable | Default | Description |
+|---|---|---|
+| `CERTBOT_EMAIL` | — | Contact email for Let's Encrypt expiry notices |
+| `CERTBOT_DOMAIN` | `QMAIL_ME` | Domain to issue the cert for |
 
 ### SNI — multiple domains
 
@@ -388,9 +488,10 @@ environment:
   QMAIL_SNI_CERTS: "mail2.example.org:/etc/letsencrypt/live/mail2.example.org/fullchain.pem:/etc/letsencrypt/live/mail2.example.org/privkey.pem"
 ```
 
-On every startup the entrypoint combines each cert+key into
+Semicolon-separate multiple triplets for additional domains. On every startup
+the entrypoint combines each cert+key into
 `control/servercerts/<domain>/servercert.pem` and generates
-`control/dovecot-sni.conf` with `local_name` blocks.
+`control/dovecot-sni.conf` with `local_name` blocks for Dovecot.
 
 ---
 

@@ -202,37 +202,6 @@ if [ ! -f "$CONTROL/me" ]; then
             < "$CONTROL/tcp.smtps"
     fi
 
-    # ── TLS certificate setup ──────────────────────────────────────────────────
-    # Priority order:
-    #   1. QMAIL_TLS_CERT + QMAIL_TLS_KEY env vars — paths to existing PEM files
-    #      (e.g. Let's Encrypt). Combined into servercert.pem.
-    #   2. servercert.pem already present in the volume — used as-is.
-    #   3. Neither — self-signed cert generated for QMAIL_ME.
-    #
-    # Both qmail (sslserver) and Dovecot read the combined PEM from
-    # $CONTROL/servercert.pem (certificate block first, then private key).
-    # DH params are generated once at $CONTROL/dh4096.pem (2048-bit for speed;
-    # raise to 4096 by setting QMAIL_DH_BITS=4096).
-
-    if [ -n "$QMAIL_TLS_CERT" ] && [ -n "$QMAIL_TLS_KEY" ]; then
-        if [ ! -f "$QMAIL_TLS_CERT" ]; then
-            echo "ERROR: QMAIL_TLS_CERT=$QMAIL_TLS_CERT not found" >&2; exit 1
-        fi
-        if [ ! -f "$QMAIL_TLS_KEY" ]; then
-            echo "ERROR: QMAIL_TLS_KEY=$QMAIL_TLS_KEY not found" >&2; exit 1
-        fi
-        echo "qmail: installing TLS cert from $QMAIL_TLS_CERT + $QMAIL_TLS_KEY"
-        cat "$QMAIL_TLS_CERT" "$QMAIL_TLS_KEY" > "$CONTROL/servercert.pem"
-        chmod 600 "$CONTROL/servercert.pem"
-    elif [ ! -f "$CONTROL/servercert.pem" ]; then
-        echo "qmail: generating self-signed TLS cert for $QMAIL_ME"
-        openssl req -new -x509 -nodes -days 3650 \
-            -subj "/CN=$QMAIL_ME" \
-            -out "$CONTROL/servercert.pem" \
-            -keyout "$CONTROL/servercert.pem" 2>/dev/null
-        chmod 600 "$CONTROL/servercert.pem"
-    fi
-
     if [ ! -f "$CONTROL/dh4096.pem" ]; then
         echo "qmail: generating DH params (${QMAIL_DH_BITS:-2048}-bit) ..."
         openssl dhparam -out "$CONTROL/dh4096.pem" "${QMAIL_DH_BITS:-2048}" 2>/dev/null
@@ -358,6 +327,47 @@ if [ -n "$QMAIL_DOMAIN" ] && [ ! -d "/srv/mail/vpopmail/domains/$QMAIL_DOMAIN" ]
     printf '|/var/qmail/bin/lmtp-deliver\n' \
         > "/home/vpopmail/domains/$QMAIL_DOMAIN/.qmail-default"
     chown vpopmail:vchkpw "/home/vpopmail/domains/$QMAIL_DOMAIN/.qmail-default"
+fi
+
+# ── TLS certificate setup (runs every startup) ───────────────────────────────
+# Priority order:
+#   1. QMAIL_TLS_CERT + QMAIL_TLS_KEY env vars — paths to existing PEM files
+#      (e.g. Let's Encrypt). Combined into servercert.pem on every startup so
+#      renewed certs are picked up automatically after a container restart.
+#   2. servercert.pem already present in the volume — used as-is.
+#   3. Neither — self-signed cert generated for QMAIL_ME (first run only).
+#
+# Both qmail (sslserver) and Dovecot read the combined PEM from
+# $CONTROL/servercert.pem (certificate block first, then private key).
+# DH params are generated once at $CONTROL/dh4096.pem (2048-bit for speed;
+# raise to 4096 by setting QMAIL_DH_BITS=4096).
+
+if [ -n "$QMAIL_TLS_CERT_B64" ] && [ -n "$QMAIL_TLS_KEY_B64" ]; then
+    echo "qmail: installing TLS cert from QMAIL_TLS_CERT_B64 + QMAIL_TLS_KEY_B64"
+    { printf '%s' "$QMAIL_TLS_CERT_B64" | base64 -d
+      printf '%s' "$QMAIL_TLS_KEY_B64"  | base64 -d
+    } > "$CONTROL/servercert.pem"
+    chmod 600 "$CONTROL/servercert.pem"
+elif [ -n "$QMAIL_TLS_CERT" ] && [ -n "$QMAIL_TLS_KEY" ]; then
+    if [ ! -f "$QMAIL_TLS_CERT" ] || [ ! -f "$QMAIL_TLS_KEY" ]; then
+        echo "qmail: WARNING: TLS cert not found at $QMAIL_TLS_CERT — falling back to self-signed" >&2
+        # Fall through: cert will be generated below if servercert.pem is absent,
+        # or an existing one will be reused. Run certbot then restart qmail.
+    else
+        echo "qmail: installing TLS cert from $QMAIL_TLS_CERT + $QMAIL_TLS_KEY"
+        cat "$QMAIL_TLS_CERT" "$QMAIL_TLS_KEY" > "$CONTROL/servercert.pem"
+        chmod 600 "$CONTROL/servercert.pem"
+    fi
+fi
+if [ ! -f "$CONTROL/servercert.pem" ]; then
+    _me=${QMAIL_ME:-$(cat "$CONTROL/me" 2>/dev/null)}
+    echo "qmail: generating self-signed TLS cert for $_me"
+    openssl req -new -x509 -nodes -days 3650 \
+        -subj "/CN=$_me" \
+        -out "$CONTROL/servercert.pem" \
+        -keyout "$CONTROL/servercert.pem" 2>/dev/null
+    chmod 600 "$CONTROL/servercert.pem"
+    unset _me
 fi
 
 # ── SNI certificate setup (runs every startup) ────────────────────────────────

@@ -78,11 +78,32 @@ services:
 
 
       # ── TLS ──────────────────────────────────────────────────────────────────
-      # Leave empty to generate a self-signed cert on first run.
-      # Set both to paths of existing PEM files (e.g. Let's Encrypt).
-      # Files must be accessible inside the container (mount via volume).
+      # Three options (set in .env):
+      #
+      #   1. Self-signed (default) — leave both empty; cert is auto-generated on
+      #      first run for QMAIL_ME. Fine for testing, not for production.
+      #
+      #   2. Ready cert — point to PEM files already on the host or in a volume:
+      #        QMAIL_TLS_CERT=/etc/ssl/mail/fullchain.pem
+      #        QMAIL_TLS_KEY=/etc/ssl/mail/privkey.pem
+      #      Uncomment the bind-mount in the volumes section below, then adjust
+      #      the host path to wherever your cert files live.
+      #
+      #   3. Let's Encrypt via certbot — run:  docker compose run --rm certbot
+      #      Cert path is set automatically if CERTBOT_DOMAIN is configured.
+      #      After first issue, set in .env:
+      #        QMAIL_TLS_CERT=/etc/letsencrypt/live/<domain>/fullchain.pem
+      #        QMAIL_TLS_KEY=/etc/letsencrypt/live/<domain>/privkey.pem
+      #      Restart qmail after each renewal to install the updated cert.
+      #      If the cert files are missing at startup, qmail falls back to self-signed.
       QMAIL_TLS_CERT: ${QMAIL_TLS_CERT:-}
       QMAIL_TLS_KEY: ${QMAIL_TLS_KEY:-}
+      # Alternative: pass cert/key as base64-encoded strings (no volume needed).
+      # Takes precedence over QMAIL_TLS_CERT/KEY when both are set.
+      #   base64 -w0 fullchain.pem   →  QMAIL_TLS_CERT_B64
+      #   base64 -w0 privkey.pem     →  QMAIL_TLS_KEY_B64
+      QMAIL_TLS_CERT_B64: ${QMAIL_TLS_CERT_B64:-}
+      QMAIL_TLS_KEY_B64: ${QMAIL_TLS_KEY_B64:-}
       QMAIL_DH_BITS: ${QMAIL_DH_BITS:-2048}
       QMAIL_TLS_CIPHERS: ${QMAIL_TLS_CIPHERS:-HIGH:MEDIUM:!MD5:!RC4:!3DES:!LOW:!SSLv2:!SSLv3}
 
@@ -164,6 +185,13 @@ services:
       - maildata:/srv/mail
       # Domain Maildirs — shared with Dovecot (both need write access)
       - dovecot_mail:/srv/mail/vpopmail/domains
+      # ACME challenge webroot — written by certbot, served by lighttpd on /.well-known/
+      - acme_webroot:/var/www/acme
+      # Let's Encrypt certs — written by certbot, read by qmail entrypoint (option 3)
+      - letsencrypt:/etc/letsencrypt:ro
+      # Ready cert bind-mount — uncomment for option 2 and set QMAIL_TLS_CERT/KEY in .env
+      # Adjust the host path to the directory containing your fullchain.pem + privkey.pem
+      #- /etc/ssl/mail:/etc/ssl/mail:ro
 
   clamav:
     image: clamav/clamav:latest
@@ -253,7 +281,37 @@ services:
       # Domain Maildirs — shared with qmail (both need write access)
       - dovecot_mail:/srv/mail/vpopmail/domains
       # Read-only access to qmail control files (TLS certs, Sieve scripts)
+      # qmail entrypoint builds servercert.pem from Let's Encrypt certs — dovecot reads that.
       - maildata:/srv/qmail:ro
+
+  certbot:
+    image: certbot/certbot:latest
+    # Optional — only active with the "certbot" profile.
+    # Runs once to issue/renew; does not stay running.
+    #
+    # Requires in .env:
+    #   CERTBOT_EMAIL=you@example.com
+    #   CERTBOT_DOMAIN=mail.yourdomain.com   (defaults to QMAIL_ME)
+    #
+    # Usage:
+    #   docker compose --profile certbot run --rm certbot
+    #   docker compose --profile certbot run --rm certbot renew   # explicit renew
+    #   (cron renewal — adjust path):
+    #   0 3 * * * docker compose --profile certbot -f /path/to/docker-compose.yml run --rm certbot
+    profiles: ["certbot"]
+    restart: "no"
+    volumes:
+      - acme_webroot:/var/www/acme
+      - letsencrypt:/etc/letsencrypt
+    environment:
+      CERTBOT_EMAIL: ${CERTBOT_EMAIL:-}
+      CERTBOT_DOMAIN: ${CERTBOT_DOMAIN:-${QMAIL_ME:-mail.example.com}}
+    command: >
+      certonly
+        --webroot --webroot-path /var/www/acme
+        --email $${CERTBOT_EMAIL}
+        --agree-tos --non-interactive --keep-until-expiring
+        -d $${CERTBOT_DOMAIN}
 
 volumes:
   maildata:
@@ -262,3 +320,5 @@ volumes:
   clamav_data:
   redis_data:
   rspamd_data:
+  acme_webroot:
+  letsencrypt:
