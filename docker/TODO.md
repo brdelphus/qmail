@@ -285,7 +285,7 @@ oletools     — Office macro scanning via olefy/olevba           port:  11343 (
 - [x] `SIMSCAN_ENABLE=true` confirmed; `DKIMQUEUE=/var/qmail/bin/simscan`
 - [x] `SIMSCAN_ATTACH` — empty; no extension blocking configured (expected default)
 - [x] **GTUBE rejection** — port 25 → `554 Your email is considered spam (15.00 spam-hits)` ✓
-- [ ] EICAR MIME rejection via ClamAV
+- [x] **EICAR MIME rejection via ClamAV** — `CLAMAV{Eicar-Signature}` symbol fired; rspamd forced reject: `Virus found: Eicar-Signature`; SMTP `554` returned ✓
 
 - [ ] Per-domain simcontrol overrides — add a domain entry, recompile with `simscanmk`, verify
 - [ ] Confirm rspamd web UI shows scan results (http://host:11334)
@@ -319,7 +319,7 @@ oletools     — Office macro scanning via olefy/olevba           port:  11343 (
 - [x] **Greetdelay / DROP_PRE_GREET** — immediate EHLO → `554 SMTP protocol violation` ✓
 - [x] **BRTLIMIT=2** — `421 too many invalid addresses` after 2nd bad RCPT ✓
 - [x] **Rate limiting** — 4th relay message on port 465 → `421 you have exceeded your messaging limits` ✓
-- [ ] **CHKUSER_WRONGRCPTLIMIT=3** — BRTLIMIT=2 fires first; need to raise BRTLIMIT or test separately
+- [x] **CHKUSER_WRONGRCPTLIMIT=3** — temporarily raised BRTLIMIT to 10; 3rd bad RCPT → `550 5.7.1 sorry, you are violating our security policies (chkuser)` ✓
 - [ ] **SPF reject** — skip; no DNS control in test env
 - [ ] **DKIM verify** — send DKIM-signed mail, check log for `dkim=pass`; broken sig → `dkim=fail`
 - [ ] **SURBL** — set `control/surbl=1`, send mail with SURBL-listed URL, confirm rejection
