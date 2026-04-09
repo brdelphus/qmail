@@ -168,6 +168,17 @@ RUN wget -q https://notes.sagredo.eu/files/qmail/patches/greylisting/jms/jgreyli
         https://notes.sagredo.eu/files/qmail/patches/greylisting/jms/jgreylist-clean \
  && chmod 755 /var/qmail/bin/jgreylist-clean
 
+# ── Step 4b+: rcptcheck-overlimit ────────────────────────────────────────────
+# Rate-limiting script for authenticated relay clients (ports 465/587).
+# Counts accepted RCPTTOs per auth user or IP; rejects with 421 when over limit.
+# Limit config: control/relaylimits; state dir: /var/qmail/overlimit (writable by vpopmail).
+# Reset counts by clearing the overlimit dir (e.g. daily via cron).
+RUN cp /usr/src/qmail/scripts/rcptcheck-overlimit /var/qmail/bin/rcptcheck-overlimit \
+ && chmod 0755 /var/qmail/bin/rcptcheck-overlimit \
+ && mkdir -p /var/qmail/overlimit \
+ && chown vpopmail:vchkpw /var/qmail/overlimit \
+ && chmod 0750 /var/qmail/overlimit
+
 # ── Step 4c: qmail-spp greylisting plugin ────────────────────────────────────
 # MySQL-backed greylisting that runs inside qmail-smtpd via the SPP plugin
 # mechanism. More flexible than jgreylist: per-IP exemptions, pass/block stats,

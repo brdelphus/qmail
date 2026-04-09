@@ -31,16 +31,13 @@ if [ -f $QMAILDIR/control/smtpplugins ] && [ -d $QMAILDIR/plugins ]; then
     export ENABLE_SPP=1
 fi
 
-# Rate limiting — restrict how many messages an auth user/domain/IP may send.
-# control/relaylimits format: "user@domain:N", "domain:N", "IP:N", ":N" (default)
-# 0 = unlimited for that entry. Counts reset by cron via greylisting_cleanup or similar.
-# Guard: only enable if the binary was compiled into the image.
-if [ -x "$QMAILDIR/bin/rcptcheck-overlimit" ]; then
-    export RCPTCHECK="$QMAILDIR/bin/rcptcheck-overlimit"
-    export RCPTCHECKRELAYCLIENT="1"
-    export OVERLIMITDIR="$QMAILDIR/overlimit"
-    export LIMITSCONTROLFILE="$QMAILDIR/control/relaylimits"
-fi
+# Rate limiting — reject when auth user/IP exceeds control/relaylimits threshold.
+# Format: "user@domain:N", "domain:N", "IP:N", ":N" (default). 0 = unlimited.
+# Counts reset by clearing /var/qmail/overlimit (e.g. daily via cron).
+export RCPTCHECK="$QMAILDIR/bin/rcptcheck-overlimit"
+export RCPTCHECKRELAYCLIENT="1"
+export OVERLIMITDIR="$QMAILDIR/overlimit"
+export LIMITSCONTROLFILE="$QMAILDIR/control/relaylimits"
 
 exec chpst -m "$SOFTLIMIT" \
     /usr/local/bin/tcpserver -v -R -l "$LOCAL" \
