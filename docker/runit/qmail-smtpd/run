@@ -19,7 +19,9 @@ export SURBL=$(cat $QMAILDIR/control/surbl 2>/dev/null || echo 0)
 
 # DKIM verification for inbound mail; simscan (AV + spam) runs after
 export QMAILQUEUE=$QMAILDIR/bin/qmail-dkim
-export DKIMVERIFY="FGHKLMNOQRTVWp"
+# DKIMVERIFY read from control/dkimverify — written by entrypoint based on DKIM_VERIFY_LAYER.
+# Empty = disabled (rspamd layer); "FGHKLMNOQRTVWp" = full verification (qmail layer).
+export DKIMVERIFY=$(cat $QMAILDIR/control/dkimverify 2>/dev/null || true)
 export RELAYCLIENT_NODKIMVERIFY=1
 if [ "${SIMSCAN_ENABLE:-true}" = "true" ]; then
     export DKIMQUEUE=$QMAILDIR/bin/simscan

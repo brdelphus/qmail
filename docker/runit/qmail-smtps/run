@@ -33,6 +33,8 @@ export DROP_PRE_GREET=1
 # SURBL and DKIM — same as port 25
 export SURBL=$(cat $QMAILDIR/control/surbl 2>/dev/null || echo 0)
 export QMAILQUEUE=$QMAILDIR/bin/qmail-dkim
+export DKIMVERIFY=$(cat $QMAILDIR/control/dkimverify 2>/dev/null || true)
+export RELAYCLIENT_NODKIMVERIFY=1
 if [ "${SIMSCAN_ENABLE:-true}" = "true" ]; then
     export DKIMQUEUE=$QMAILDIR/bin/simscan
     export SIMSCAN_DEBUG=${SIMSCAN_DEBUG:-0}

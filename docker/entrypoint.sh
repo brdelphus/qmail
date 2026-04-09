@@ -141,7 +141,6 @@ if [ ! -f "$CONTROL/me" ]; then
 
     printf '%s' "$QMAIL_BOUNCEFROM"          > "$CONTROL/bouncefrom"
     printf '%s' "$QMAIL_ME"                  > "$CONTROL/bouncehost"
-    printf '%s' "$QMAIL_SPFBEHAVIOR"         > "$CONTROL/spfbehavior"
     printf '%s' "$QMAIL_QUEUELIFETIME"       > "$CONTROL/queuelifetime"
 
     # Optional: custom SPF explanation message
@@ -149,11 +148,9 @@ if [ ! -f "$CONTROL/me" ]; then
         printf '%s' "$QMAIL_SPF_EXP" > "$CONTROL/spfexp"
     fi
 
-    # Greetdelay and SURBL — configurable via env vars
+    # Greetdelay — configurable via env var
     QMAIL_GREETDELAY=${QMAIL_GREETDELAY:-5}
-    QMAIL_SURBL=${QMAIL_SURBL:-0}
     printf '%s' "$QMAIL_GREETDELAY"          > "$CONTROL/greetdelay"
-    printf '%s' "$QMAIL_SURBL"               > "$CONTROL/surbl"
 
     # Deliver via LMTP to Dovecot container. Sieve filters run on delivery.
     # qmail-local sets $EXT (local part) and $HOST (domain) which the
@@ -286,18 +283,6 @@ EOF
             # Empty file — tapping disabled until rules are added manually
             touch "$CONTROL/taps"
         fi
-    fi
-
-    # ── Optional: DNSBL/RBL setup ──────────────────────────────────────────────
-    # Create default dnsbllist if not present. Edit to customize blocklists.
-    if [ ! -f "$CONTROL/dnsbllist" ]; then
-        cat > "$CONTROL/dnsbllist" << 'EOF'
-# DNS blocklists — one per line. Prefix with - for 553 reject (vs 451 defer).
-# See: https://www.sagredo.eu/en/qmail-notes-185/realtime-block-list-rbl-qmail-dnsbl-162.html
-#-zen.spamhaus.org
-#-b.barracudacentral.org
-#-bl.spamcop.net
-EOF
     fi
 
     # ── vqadmin HTTP auth setup ────────────────────────────────────────────────
@@ -445,6 +430,66 @@ EOF
 fi
 /var/qmail/bin/simscanmk 2>/dev/null && echo "qmail: simscanmk compiled" || true
 chown -R clamav:clamav "$QMAILDIR/simscan" 2>/dev/null || true
+
+# ── Feature layer toggles: SPF / DKIM verify / DNSBL / SURBL ─────────────────
+# Each feature can be owned by "rspamd" (default) or "qmail".
+# The active layer is enabled; the other is automatically disabled.
+# rspamd handles the disable on its own side via override.d (rspamd/entrypoint.sh).
+
+SPF_LAYER=${SPF_LAYER:-rspamd}
+DKIM_VERIFY_LAYER=${DKIM_VERIFY_LAYER:-rspamd}
+DNSBL_LAYER=${DNSBL_LAYER:-rspamd}
+SURBL_LAYER=${SURBL_LAYER:-rspamd}
+
+# SPF: spfbehavior 0=disabled; non-zero value from QMAIL_SPFBEHAVIOR (default 3)
+if [ "$SPF_LAYER" = "qmail" ]; then
+    _spfval=${QMAIL_SPFBEHAVIOR:-3}
+    printf '%s' "$_spfval" > "$CONTROL/spfbehavior"
+    echo "qmail: SPF layer=qmail (spfbehavior=$_spfval)"
+else
+    printf '%s' "0" > "$CONTROL/spfbehavior"
+    echo "qmail: SPF layer=rspamd (spfbehavior=0)"
+fi
+
+# DKIM verify: control/dkimverify empty = disabled; populated = verify flags string
+if [ "$DKIM_VERIFY_LAYER" = "qmail" ]; then
+    printf '%s' "FGHKLMNOQRTVWp" > "$CONTROL/dkimverify"
+    echo "qmail: DKIM verify layer=qmail"
+else
+    printf '' > "$CONTROL/dkimverify"
+    echo "qmail: DKIM verify layer=rspamd (disabled in qmail)"
+fi
+
+# DNSBL: empty dnsbllist = disabled; populate from QMAIL_DNSBL_SERVERS when layer=qmail
+# QMAIL_DNSBL_SERVERS: space-separated list of RBL servers.
+# Prefix with - for hard reject (553); without prefix = soft reject (451).
+if [ "$DNSBL_LAYER" = "qmail" ]; then
+    if [ -n "$QMAIL_DNSBL_SERVERS" ]; then
+        printf '%s\n' "$QMAIL_DNSBL_SERVERS" | tr ' ' '\n' | grep -v '^$' > "$CONTROL/dnsbllist"
+        echo "qmail: DNSBL layer=qmail (dnsbllist written from QMAIL_DNSBL_SERVERS)"
+    else
+        cat > "$CONTROL/dnsbllist" << 'EOF'
+# DNS blocklists — one per line. Prefix with - for hard reject (553) vs soft (451).
+# Set QMAIL_DNSBL_SERVERS (space-separated) to populate automatically.
+#-zen.spamhaus.org
+#-b.barracudacentral.org
+#-bl.spamcop.net
+EOF
+        echo "qmail: DNSBL layer=qmail but QMAIL_DNSBL_SERVERS is empty — no active entries"
+    fi
+else
+    printf '' > "$CONTROL/dnsbllist"
+    echo "qmail: DNSBL layer=rspamd (dnsbllist cleared)"
+fi
+
+# SURBL: control/surbl 0=disabled, 1=enabled
+if [ "$SURBL_LAYER" = "qmail" ]; then
+    printf '%s' "1" > "$CONTROL/surbl"
+    echo "qmail: SURBL layer=qmail (control/surbl=1)"
+else
+    printf '%s' "0" > "$CONTROL/surbl"
+    echo "qmail: SURBL layer=rspamd (control/surbl=0)"
+fi
 
 # ── Rebuild users/assign + CDB ───────────────────────────────────────────────
 # /var/qmail/users is not a named volume — it is lost on container recreation.

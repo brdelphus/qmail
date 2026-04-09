@@ -53,9 +53,22 @@ services:
       QMAIL_MAXRCPT: ${QMAIL_MAXRCPT:-100}
       QMAIL_QUEUELIFETIME: ${QMAIL_QUEUELIFETIME:-272800}
 
+      # ── Feature layer toggles ─────────────────────────────────────────────────
+      # Each feature can be owned by "rspamd" (default) or "qmail".
+      # The active layer is enabled; the inactive layer is automatically disabled.
+      # Applies to both the qmail and rspamd containers (same vars, mirrored logic).
+      SPF_LAYER: ${SPF_LAYER:-rspamd}
+      DKIM_VERIFY_LAYER: ${DKIM_VERIFY_LAYER:-rspamd}
+      DNSBL_LAYER: ${DNSBL_LAYER:-rspamd}
+      SURBL_LAYER: ${SURBL_LAYER:-rspamd}
+      # DNSBL servers used when DNSBL_LAYER=qmail (space-separated, prefix - for hard reject)
+      QMAIL_DNSBL_SERVERS: ${QMAIL_DNSBL_SERVERS:-}
+
       # ── SMTP behaviour ───────────────────────────────────────────────────────
+      # QMAIL_SPFBEHAVIOR: only active when SPF_LAYER=qmail (0=off ignored then)
       QMAIL_SPFBEHAVIOR: ${QMAIL_SPFBEHAVIOR:-3}
       QMAIL_GREETDELAY: ${QMAIL_GREETDELAY:-5}
+      # QMAIL_SURBL: only active when SURBL_LAYER=qmail (ignored otherwise)
       QMAIL_SURBL: ${QMAIL_SURBL:-0}
       QMAIL_CHKUSER_WRONGRCPTLIMIT: ${QMAIL_CHKUSER_WRONGRCPTLIMIT:-3}
       QMAIL_BRTLIMIT: ${QMAIL_BRTLIMIT:-2}
@@ -271,6 +284,11 @@ services:
       # Web UI + controller password — hash is generated at startup from this value.
       # Change in .env; no manual hash generation needed.
       RSPAMD_PASSWORD: ${RSPAMD_PASSWORD:-changeme_rspamd}
+      # ── Feature layer toggles — must match values in qmail service above ──────
+      SPF_LAYER: ${SPF_LAYER:-rspamd}
+      DKIM_VERIFY_LAYER: ${DKIM_VERIFY_LAYER:-rspamd}
+      DNSBL_LAYER: ${DNSBL_LAYER:-rspamd}
+      SURBL_LAYER: ${SURBL_LAYER:-rspamd}
     volumes:
       - ./rspamd/local.d:/etc/rspamd/local.d:ro
       - ./rspamd/lua.local.d:/etc/rspamd/lua.local.d:ro
