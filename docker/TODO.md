@@ -273,7 +273,7 @@ oletools     — Office macro scanning via olefy/olevba           port:  11343 (
 | # | Bug | Impact |
 |---|-----|--------|
 | ~~A~~ | ~~**rspamd-spamc CRLF** — awk `/^$/` doesn't match `\r\n` blank line from qmail DATA; X-Spam headers never inserted; simscan always reads score 0.00 → CLEAN~~ | **Fixed**: root cause was `rspamc` failing to mmap `libicudata.so.72` under `chpst -m 64MB` RLIMIT_AS; switched to `curl` + `/checkv2` HTTP API |
-| B | **Tika not wired** — `local.d/tika.conf` lacks the `external_services { tika { } }` block; rspamd never submits attachments to Tika | Attachment text extraction disabled |
+| ~~B~~ | ~~**Tika not wired** — `local.d/tika.conf` lacks the `external_services { tika { } }` block; rspamd never submits attachments to Tika~~ | **Fixed**: rspamd 4.x has no built-in tika module; wrote `lua.local.d/tika.lua` plugin using `rspamd_http` to PUT attachments to `/tika` REST endpoint; `TIKA_EXTRACTED` symbol confirmed in scan log |
 | C | **rspamd.env permissions** — `/etc/dovecot/sieve/rspamd.env` is `root:root 600`; sieve runs as mail user and cannot source it | Bayes spam/ham learning via IMAPSieve broken |
 
 ### Rspamd / simscan
@@ -291,8 +291,8 @@ oletools     — Office macro scanning via olefy/olevba           port:  11343 (
 ### Tika
 
 - [x] Tika fail-open — stopped container, mail still got `250 ok` ✓
-- [ ] **[blocked: bug B]** PDF/DOCX attachment — no `TIKA_*` symbols appear; rspamd never calls Tika
-- [ ] **[blocked: bug B]** Check rspamd web UI symbols for `TIKA_*` entries on scanned attachments
+- [x] **PDF attachment** — `TIKA_EXTRACTED(0.00){application/pdf(22b);}` confirmed in scan log ✓
+- [ ] Verify `TIKA_EXTRACTED` appears in rspamd web UI symbol list
 
 ### Oletools (profile: macros)
 

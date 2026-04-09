@@ -270,6 +270,7 @@ services:
       RSPAMD_PASSWORD: ${RSPAMD_PASSWORD:-changeme_rspamd}
     volumes:
       - ./rspamd/local.d:/etc/rspamd/local.d:ro
+      - ./rspamd/lua.local.d:/etc/rspamd/lua.local.d:ro
       - rspamd_data:/var/lib/rspamd
     ports:
       - "11334:11334"   # Web UI
