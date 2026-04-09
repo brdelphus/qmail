@@ -258,13 +258,37 @@ automatically. See `.env.example` for a fully commented reference.
 | `QMAIL_MAXRCPT` | `100` | Max recipients per message |
 | `QMAIL_QUEUELIFETIME` | `272800` | Seconds a message stays in queue before bouncing (~3 days) |
 
+### Feature layer toggles
+
+SPF, DKIM verification, DNSBL, and SURBL are each implemented in both
+qmail-smtpd and rspamd. These vars assign ownership to one layer; the other
+is disabled automatically at container start.
+
+| Variable | Default | Controls |
+|---|---|---|
+| `SPF_LAYER` | `rspamd` | SPF sender policy check |
+| `DKIM_VERIFY_LAYER` | `rspamd` | DKIM signature verification on inbound mail |
+| `DNSBL_LAYER` | `rspamd` | DNS/RBL blocklist queries |
+| `SURBL_LAYER` | `rspamd` | URI/SURBL blocklist checks |
+
+- **`rspamd`** (default) — rspamd module active; qmail feature disabled
+- **`qmail`** — qmail-smtpd feature active; rspamd module written to `override.d` with `enabled = false;`
+
+When `DNSBL_LAYER=qmail`, blocklist servers come from `QMAIL_DNSBL_SERVERS`
+(space-separated; prefix with `-` for hard reject). If unset, defaults to
+`zen.spamhaus.org`, `b.barracudacentral.org`, `psbl.surriel.com`, `bl.spamcop.net`.
+
+When `SURBL_LAYER=qmail`, the TLD lists (`level2-tlds`, `level3-tlds`) are
+downloaded from `surbl.org` on first use and cached in `control/` (volume-persisted).
+Delete them to force a re-download.
+
 ### SMTP behaviour
 
 | Variable | Default | Description |
 |---|---|---|
-| `QMAIL_SPFBEHAVIOR` | `3` | SPF: `0`=off, `1`=neutral, `2`=softfail, `3`=fail→reject |
+| `QMAIL_SPFBEHAVIOR` | `3` | SPF reject mode when `SPF_LAYER=qmail`: `1`=neutral, `2`=softfail, `3`=fail→reject |
+| `QMAIL_DNSBL_SERVERS` | see above | RBL servers when `DNSBL_LAYER=qmail` (space-separated, `-` prefix = hard reject) |
 | `QMAIL_GREETDELAY` | `5` | Seconds to delay SMTP greeting (anti-spam) |
-| `QMAIL_SURBL` | `0` | SURBL URI blocklist filtering (`0`=off, `1`=on) |
 | `QMAIL_CHKUSER_WRONGRCPTLIMIT` | `3` | Max invalid recipients before disconnect (all ports) |
 | `QMAIL_BRTLIMIT` | `2` | Max non-existent recipients before disconnect (brtlimit patch) |
 | `QMAIL_BOUNCEFROM` | `noreply` | Envelope sender name for bounce messages |
@@ -649,9 +673,14 @@ docker compose -f docker/docker-compose.yml exec qmail \
 
 ## DNS blocklists (DNSBL/RBL)
 
-A template `dnsbllist` is created at `/srv/mail/qmail/control/dnsbllist`.
-Uncomment and customise blocklists as needed. Prefix with `-` for 553 reject
-(vs 451 defer):
+By default (`DNSBL_LAYER=rspamd`) rspamd handles RBL checks. To use qmail's
+built-in DNSBL instead, set `DNSBL_LAYER=qmail` in `.env`. The entrypoint
+will populate `control/dnsbllist` from `QMAIL_DNSBL_SERVERS`, or fall back to
+the defaults (`zen.spamhaus.org`, `b.barracudacentral.org`, `psbl.surriel.com`,
+`bl.spamcop.net`). Prefix a server with `-` for hard reject (553) vs soft
+reject (451).
+
+To customise the server list directly:
 
 ```sh
 docker compose -f docker/docker-compose.yml exec qmail \

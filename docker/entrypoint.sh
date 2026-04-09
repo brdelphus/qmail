@@ -460,31 +460,43 @@ else
     echo "qmail: DKIM verify layer=rspamd (disabled in qmail)"
 fi
 
-# DNSBL: empty dnsbllist = disabled; populate from QMAIL_DNSBL_SERVERS when layer=qmail
-# QMAIL_DNSBL_SERVERS: space-separated list of RBL servers.
+# DNSBL: empty dnsbllist = disabled; populate from QMAIL_DNSBL_SERVERS when layer=qmail.
 # Prefix with - for hard reject (553); without prefix = soft reject (451).
+# Default servers mirror config-all.sh defaults.
 if [ "$DNSBL_LAYER" = "qmail" ]; then
     if [ -n "$QMAIL_DNSBL_SERVERS" ]; then
         printf '%s\n' "$QMAIL_DNSBL_SERVERS" | tr ' ' '\n' | grep -v '^$' > "$CONTROL/dnsbllist"
-        echo "qmail: DNSBL layer=qmail (dnsbllist written from QMAIL_DNSBL_SERVERS)"
+        echo "qmail: DNSBL layer=qmail (dnsbllist from QMAIL_DNSBL_SERVERS)"
     else
         cat > "$CONTROL/dnsbllist" << 'EOF'
-# DNS blocklists — one per line. Prefix with - for hard reject (553) vs soft (451).
-# Set QMAIL_DNSBL_SERVERS (space-separated) to populate automatically.
-#-zen.spamhaus.org
-#-b.barracudacentral.org
-#-bl.spamcop.net
+-zen.spamhaus.org
+-b.barracudacentral.org
+-psbl.surriel.com
+-bl.spamcop.net
 EOF
-        echo "qmail: DNSBL layer=qmail but QMAIL_DNSBL_SERVERS is empty — no active entries"
+        echo "qmail: DNSBL layer=qmail (default servers: zen.spamhaus.org b.barracudacentral.org psbl.surriel.com bl.spamcop.net)"
     fi
 else
     printf '' > "$CONTROL/dnsbllist"
     echo "qmail: DNSBL layer=rspamd (dnsbllist cleared)"
 fi
 
-# SURBL: control/surbl 0=disabled, 1=enabled
+# SURBL: control/surbl 0=disabled, 1=enabled.
+# When layer=qmail the TLD lists (level2-tlds, level3-tlds) are required — download on
+# first use and cache in the volume. Delete those files to force a re-download.
+# control/cache/ holds per-URI lookup results; purge it if it grows stale.
 if [ "$SURBL_LAYER" = "qmail" ]; then
     printf '%s' "1" > "$CONTROL/surbl"
+    mkdir -p "$CONTROL/cache"
+    if [ ! -s "$CONTROL/level2-tlds" ] || [ ! -s "$CONTROL/level3-tlds" ]; then
+        echo "qmail: SURBL layer=qmail — downloading TLD files from surbl.org..."
+        wget -q -O "$CONTROL/level3-tlds" https://www.surbl.org/static/three-level-tlds 2>/dev/null \
+            && echo "qmail: SURBL level3-tlds downloaded" \
+            || echo "qmail: WARNING: failed to download level3-tlds (SURBL may not block URI spam)" >&2
+        wget -q -O "$CONTROL/level2-tlds" https://www.surbl.org/static/two-level-tlds 2>/dev/null \
+            && echo "qmail: SURBL level2-tlds downloaded" \
+            || echo "qmail: WARNING: failed to download level2-tlds (SURBL may not block URI spam)" >&2
+    fi
     echo "qmail: SURBL layer=qmail (control/surbl=1)"
 else
     printf '%s' "0" > "$CONTROL/surbl"

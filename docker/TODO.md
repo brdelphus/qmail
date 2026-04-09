@@ -257,6 +257,33 @@ simscan → rspamd :11333
 
 ---
 
+## ✅ Step 9 — Feature layer toggles (qmail ↔ rspamd)
+
+Four features are implemented in both qmail-smtpd and rspamd. Each can be owned
+by exactly one layer; the other is automatically disabled at container start.
+
+| Variable | Default | Controls |
+|---|---|---|
+| `SPF_LAYER` | `rspamd` | SPF sender policy check |
+| `DKIM_VERIFY_LAYER` | `rspamd` | DKIM signature verification on inbound mail |
+| `DNSBL_LAYER` | `rspamd` | DNS/RBL blocklist checks |
+| `SURBL_LAYER` | `rspamd` | URI/SURBL blocklist checks |
+
+- `rspamd` (default) — rspamd module active; qmail feature disabled (e.g. `spfbehavior=0`)
+- `qmail` — qmail-smtpd feature active; rspamd module disabled via `override.d/*.conf`
+
+- [x] `docker/entrypoint.sh` — writes qmail control files on every startup from `*_LAYER` vars:
+  - `SPF_LAYER=qmail` → `control/spfbehavior=QMAIL_SPFBEHAVIOR` (default 3); else `0`
+  - `DKIM_VERIFY_LAYER=qmail` → `control/dkimverify=FGHKLMNOQRTVWp`; else empty
+  - `DNSBL_LAYER=qmail` → `control/dnsbllist` populated from `QMAIL_DNSBL_SERVERS` or default servers (`zen.spamhaus.org`, `b.barracudacentral.org`, `psbl.surriel.com`, `bl.spamcop.net`); else empty
+  - `SURBL_LAYER=qmail` → `control/surbl=1`, downloads `level2-tlds` + `level3-tlds` from surbl.org into `control/` (volume-persisted; downloaded once), creates `control/cache/`; else `0`
+- [x] `docker/rspamd/entrypoint.sh` — writes `override.d/*.conf` with `enabled = false;` when the peer layer is `qmail`; removes overrides when `rspamd`
+- [x] `docker/runit/qmail-smtpd/run` + `qmail-smtps/run` + `qmail-submission/run` — `DKIMVERIFY` read from `control/dkimverify` at startup; `RELAYCLIENT_NODKIMVERIFY=1` set on all submission ports
+- [x] All four `*_LAYER` vars passed to both `qmail` and `rspamd` services in `docker-compose.yml`
+- [x] Documented in `.env.example` (Feature layer toggles section)
+
+---
+
 ## Final compose stack
 
 ```
@@ -272,7 +299,7 @@ oletools     — Office macro scanning via olefy/olevba           port:  11343 (
 
 ---
 
-## Step 9 — Integration testing
+## Step 10 — Integration testing
 
 ### Bugs found during testing (must fix before re-testing)
 
