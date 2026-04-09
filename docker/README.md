@@ -26,7 +26,7 @@ previous one being installed:
 
 ```
 fehQlibs → ucspi-tcp6 → ucspi-ssl → libsrs2 → netqmail → vpopmail → autorespond
-         → patched qmail → jgreylist → spp-greylisting + ifauthskip
+         → patched qmail → jgreylist → rcptcheck-overlimit → spp-greylisting + ifauthskip
          → ripMIME → simscan → ezmlm-idx → qmailadmin → vqadmin
 ```
 
@@ -41,6 +41,7 @@ fehQlibs → ucspi-tcp6 → ucspi-ssl → libsrs2 → netqmail → vpopmail → 
 | **autorespond** | vacation responder required by qmailadmin |
 | **patched qmail** | overwrites netqmail binaries |
 | **jgreylist** | file-based greylisting wrapper compiled into `/var/qmail/bin/` |
+| **rcptcheck-overlimit** | send-rate limiting script installed to `/var/qmail/bin/` — always present, active on ports 465 and 587 |
 | **spp-greylisting + ifauthskip** | MySQL-backed greylisting plugin + auth-skip plugin compiled into `/var/qmail/plugins/` |
 | **ripMIME** | MIME extractor required by simscan for attachment scanning |
 | **simscan** | `qmail-queue` filter — calls Rspamd before queueing; rspamd owns AV via ClamAV |
@@ -87,6 +88,9 @@ On first run the entrypoint will:
 - Create the primary vpopmail domain
 - Set up tcprules CDB files
 - Write `simscan/simcontrol` from `SIMSCAN_*` env vars and compile with `simscanmk`
+
+On **every** startup the entrypoint also:
+- Rebuilds `/var/qmail/users/assign` from the vpopmail domain directories and recompiles it with `qmail-newu` — `/var/qmail/users` is not persisted in the volume so this is always required
 
 ### 3. Add the first mail user
 
@@ -561,7 +565,9 @@ docker compose -f docker/docker-compose.yml exec qmail \
 ## Rate limiting
 
 `rcptcheck-overlimit` limits how many messages an authenticated user, domain,
-or IP may send per reset period. Enabled by default on ports 587 and 465.
+or IP may send per reset period. It is always installed in the image and active
+on ports 587 and 465. Messages to local domains (in `rcpthosts`) are never
+counted — only outbound relay traffic is subject to the limit.
 
 The default limit is set by `QMAIL_RELAY_LIMIT` (default: `1000`). On first run
 the entrypoint writes `/var/qmail/control/relaylimits`:
@@ -580,8 +586,18 @@ example.com:2000
 :1000              # catch-all default
 ```
 
+> **Limit semantics:** the check is `current > limit`, so a limit of `N` allows
+> `N + 1` accepted RCPT TOs before the next one is rejected with a `421`. Set
+> `N` one lower than the intended cap if an exact cut-off matters.
+
 Per-period counts are stored in `/srv/mail/qmail/overlimit` (persisted in the
-volume). Reset them by purging that directory or running a cron job.
+volume). Reset them by purging that directory or running a cron job:
+
+```sh
+# Reset all counters (e.g. from a daily cron job)
+docker compose -f docker/docker-compose.yml exec qmail \
+    sh -c 'rm -f /var/qmail/overlimit/*'
+```
 
 ---
 
