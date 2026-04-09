@@ -443,6 +443,24 @@ fi
 /var/qmail/bin/simscanmk 2>/dev/null && echo "qmail: simscanmk compiled" || true
 chown -R clamav:clamav "$QMAILDIR/simscan" 2>/dev/null || true
 
+# ── Rebuild users/assign + CDB ───────────────────────────────────────────────
+# /var/qmail/users is not a named volume — it is lost on container recreation.
+# Regenerate it every startup from the vpopmail domains directory.
+# NOTE: in vpopmail MySQL mode the USER field must be the domain name (not the
+# system user "vpopmail"); vget_assign() uses that field as the pw_domain key
+# for the SQL lookup.
+_vpop_uid=$(id -u vpopmail)
+_vpop_gid=$(id -g vpopmail)
+{
+    for _domdir in /home/vpopmail/domains/*/; do
+        _dom=$(basename "$_domdir")
+        printf "+%s-:%s:%s:%s:%s:-::\n" \
+            "$_dom" "$_dom" "$_vpop_uid" "$_vpop_gid" "$_domdir"
+    done
+    printf ".\n"
+} > /var/qmail/users/assign
+/var/qmail/bin/qmail-newu && echo "qmail: users/assign rebuilt ($(grep -c '^+' /var/qmail/users/assign) domain(s))"
+
 # ── Service toggles ───────────────────────────────────────────────────────────
 # Enable/disable services based on environment variables.
 # Disabled services have their symlink removed from /etc/service.
