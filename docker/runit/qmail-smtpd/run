@@ -39,10 +39,13 @@ export JGREYLIST_DIR="$QMAILDIR/jgreylist"
 export JGREYLIST_LOG_SMTP=1
 
 # qmail-spp greylisting plugin — MySQL-backed, runs inside smtpd via SPP.
-# Activated by the presence of control/greylisting (its config file).
-# The plugin checks for GREYLISTING in the environment; empty string = enabled.
+# GREYLISTING="": activates the plugin (required by greylisting.c).
+# GLCONFIGFILE: path to the greylisting config file (relative to qmail dir,
+# since qmail-smtpd chdirs to /var/qmail at startup).
+# Note: the plugin automatically skips RELAYCLIENT connections.
 if [ -f "$QMAILDIR/control/greylisting" ]; then
     export GREYLISTING=""
+    export GLCONFIGFILE=control/greylisting
 fi
 
 if [ "$JGREYLIST" = "1" ]; then

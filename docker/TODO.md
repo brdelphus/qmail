@@ -336,6 +336,7 @@ oletools     — Office macro scanning via olefy/olevba           port:  11343 (
 - [ ] **SPF reject** — skip; no DNS control in test env
 - [ ] **DKIM verify** — send DKIM-signed mail, check log for `dkim=pass`; broken sig → `dkim=fail`
 - [ ] **SURBL** — set `control/surbl=1`, send mail with SURBL-listed URL, confirm rejection
-- [ ] **Greylisting (jgreylist)** — set `control/jgreylist=1`, confirm 4xx defer on first attempt, pass on retry
-- [ ] **Greylisting (qmail-spp)** — enable `GREYLIST_USER`, verify MySQL triplet state
+- [x] **Greylisting (jgreylist)** — `control/jgreylist=1`; first attempt → `450 GREYLIST Try again later.`; triplet stored in `/srv/mail/jgreylist/{ip-octets}/` hierarchy as empty file; retry after delay → `250 ok` ✓
+- [x] **Greylisting (qmail-spp)** — set `GREYLIST_USER` in `.env`; entrypoint writes `control/greylisting` + `control/mysql.cnf`; first attempt from non-relay IP (172.18.0.3) → `451 temporary failure (#4.3.0)`; triplet inserted in `greylisting_data` (`blocked_count=1`); retry after `block_expires` → `greylisting: ... exists (id=1) - accepting`, `passed_count=1` ✓
+  - Root causes found: wrong DB schema (needed `greylisting_lists` + `greylisting_data`, not single `greylisting` table); missing `GREYLISTING=""` env var; plugin silently skips RELAYCLIENT connections (must test from non-relay IP)
 - [ ] **DNSBL** — add entry to `control/dnsbllist`, send from listed IP, confirm rejection
