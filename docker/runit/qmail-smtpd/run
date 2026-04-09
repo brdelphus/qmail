@@ -26,9 +26,7 @@ if [ "${SIMSCAN_ENABLE:-true}" = "true" ]; then
     export SIMSCAN_DEBUG=${SIMSCAN_DEBUG:-0}
 fi
 
-if [ ! -f $QMAILDIR/control/smtpplugins ] || [ ! -d $QMAILDIR/plugins ]; then
-    export ENABLE_SPP=0
-else
+if [ -f $QMAILDIR/control/smtpplugins ] && [ -d $QMAILDIR/plugins ]; then
     export ENABLE_SPP=1
 fi
 

@@ -2,4 +2,10 @@
 # vusaged — vpopmail quota usage cache daemon.
 # Listens on a Unix socket so vpopmail can serve quota lookups without
 # hitting the filesystem on every delivery.
+# Guard: binary may not be present if vpopmail was built without vusaged support.
+if [ ! -x /home/vpopmail/bin/vusaged ]; then
+    echo "vusaged: binary not found, service disabled" >&2
+    sleep 86400
+    exit 0
+fi
 exec /home/vpopmail/bin/vusaged 2>&1

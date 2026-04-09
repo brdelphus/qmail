@@ -25,10 +25,9 @@ if [ "${SIMSCAN_ENABLE:-true}" = "true" ]; then
     export SIMSCAN_DEBUG=${SIMSCAN_DEBUG:-0}
 fi
 
-# SPP plugins (e.g. greylisting) — enabled when control/smtpplugins and plugins/ exist
-if [ ! -f $QMAILDIR/control/smtpplugins ] || [ ! -d $QMAILDIR/plugins ]; then
-    export ENABLE_SPP=0
-else
+# SPP plugins (e.g. greylisting) — only set when plugins are actually available.
+# Setting ENABLE_SPP=0 still triggers the SPP code path in qmail-smtpd; leave it unset to disable.
+if [ -f $QMAILDIR/control/smtpplugins ] && [ -d $QMAILDIR/plugins ]; then
     export ENABLE_SPP=1
 fi
 

@@ -321,7 +321,9 @@ fi
 
 if [ -n "$QMAIL_DOMAIN" ] && [ ! -d "/srv/mail/vpopmail/domains/$QMAIL_DOMAIN" ]; then
     echo "qmail: creating vpopmail domain $QMAIL_DOMAIN"
-    /home/vpopmail/bin/vadddomain "$QMAIL_DOMAIN"
+    _postmaster_pass="$(head -c 18 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 16)"
+    /home/vpopmail/bin/vadddomain "$QMAIL_DOMAIN" "$_postmaster_pass"
+    echo "qmail: postmaster@$QMAIL_DOMAIN created (change password with vpasswd)"
     # vadddomain writes a vdelivermail .qmail-default — replace with LMTP
     # delivery to Dovecot so Sieve filters run on every delivery.
     printf '|/var/qmail/bin/lmtp-deliver\n' \

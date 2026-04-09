@@ -81,6 +81,7 @@ RUN wget -q https://www.fehcom.de/ipnet/ucspi-tcp6/ucspi-tcp6-${TCP6_VERSION}.tg
  && tar xzf ucspi-tcp6-${TCP6_VERSION}.tgz \
  && cd net/ucspi-tcp6/ucspi-tcp6-${TCP6_VERSION} \
  && package/install \
+ && rm -f /usr/local/bin/tcpserver /usr/local/bin/tcpclient \
  && cp compile/tcpserver compile/tcpclient /usr/local/bin/
 
 # ── Step 1c: ucspi-ssl ───────────────────────────────────────────────────────
@@ -97,6 +98,7 @@ RUN wget -q https://www.fehcom.de/ipnet/ucspi-ssl/ucspi-ssl-0.99e.tgz \
  && cd host/superscript.com/net/ucspi-ssl-0.99e \
  && sed -i 's/^ccbase="cc /ccbase="cc -fcommon /' src/print-cc.sh \
  && package/install - sslperl \
+ && rm -f /usr/local/bin/sslserver /usr/local/bin/sslclient /usr/local/bin/sslprint /usr/local/bin/sslconnect /usr/local/bin/sslcat \
  && cp compile/sslserver compile/sslclient /usr/local/bin/
 
 # ── Step 2: netqmail (vanilla) ───────────────────────────────────────────────

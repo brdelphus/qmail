@@ -17,7 +17,9 @@ CERTFILE=$QMAILDIR/control/servercert.pem
 DHFILE=$QMAILDIR/control/dh4096.pem
 
 # Auth required on port 465 (submission over implicit TLS)
-# FORCETLS and DISABLETLS are not needed — TLS is implicit via sslserver.
+# DISABLETLS=1 prevents qmail-smtpd from trying its own STARTTLS —
+# the connection is already encrypted by sslserver before smtpd sees it.
+export DISABLETLS=1
 export SMTPAUTH="!"
 export CHKUSER_START=ALWAYS
 export FORCEAUTHMAILFROM=1
@@ -32,10 +34,9 @@ if [ "${SIMSCAN_ENABLE:-true}" = "true" ]; then
     export SIMSCAN_DEBUG=${SIMSCAN_DEBUG:-0}
 fi
 
-# SPP plugins — enabled when control/smtpplugins and plugins/ exist
-if [ ! -f $QMAILDIR/control/smtpplugins ] || [ ! -d $QMAILDIR/plugins ]; then
-    export ENABLE_SPP=0
-else
+# SPP plugins — only set ENABLE_SPP when plugins are actually available.
+# Setting ENABLE_SPP=0 (vs unsetting it) still triggers the SPP code path in qmail-smtpd.
+if [ -f $QMAILDIR/control/smtpplugins ] && [ -d $QMAILDIR/plugins ]; then
     export ENABLE_SPP=1
 fi
 
@@ -45,10 +46,13 @@ export RCPTCHECKRELAYCLIENT="1"
 export OVERLIMITDIR="$QMAILDIR/overlimit"
 export LIMITSCONTROLFILE="$QMAILDIR/control/relaylimits"
 
+export CERTFILE="$CERTFILE"
+export KEYFILE="$CERTFILE"
+export DHFILE="$DHFILE"
+
 exec chpst -m "$SOFTLIMIT" \
-    /usr/local/bin/sslserver -v -R -l "$LOCAL" \
-    -n "$CERTFILE" -K "$CERTFILE" \
-    -x ${TCPRULES_DIR}/tcp.smtps.cdb -c "$MAXSMTPD" \
+    /usr/local/bin/sslserver -seV -Rp -l "$LOCAL" \
+    -x ${TCPRULES_DIR}/tcp.smtp.cdb -c "$MAXSMTPD" \
     -u "$QMAILDUID" -g "$NOFILESGID" "$BINDADDR" 465 \
     $QMAILDIR/bin/qmail-smtpd \
     ~vpopmail/bin/vchkpw /bin/true 2>&1
