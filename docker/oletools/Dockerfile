@@ -5,12 +5,12 @@ ARG OLETOOLS_VERSION=0.60.1
 ARG OLEFY_COMMIT=e9e593bf29799e3f61023125cbfd5cd3c1338cf4
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends wget netcat-openbsd \
+ && apt-get install -y --no-install-recommends wget netcat-openbsd libmagic1 \
  && rm -rf /var/lib/apt/lists/*
 
 # Install oletools in an isolated venv
 RUN python -m venv /opt/olefy \
- && /opt/olefy/bin/pip install --no-cache-dir "oletools==${OLETOOLS_VERSION}"
+ && /opt/olefy/bin/pip install --no-cache-dir "oletools==${OLETOOLS_VERSION}" python-magic
 
 # Download olefy — the TCP daemon that wraps olevba for rspamd
 RUN wget -qO /opt/olefy/bin/olefy.py \
@@ -23,6 +23,8 @@ RUN useradd -r -d /nonexistent -s /usr/sbin/nologin olefy
 USER olefy
 
 ENV PATH=/opt/olefy/bin:$PATH \
+    OLEFY_PYTHON_PATH=/opt/olefy/bin/python \
+    OLEFY_OLEVBA_PATH=/opt/olefy/bin/olevba \
     # Listen on all interfaces so rspamd can reach it over the compose network
     OLEFY_BINDADDRESS=0.0.0.0 \
     OLEFY_BINDPORT=11343 \

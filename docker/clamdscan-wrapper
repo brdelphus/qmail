@@ -14,14 +14,7 @@ HOST = os.environ.get('CLAMD_HOST', 'clamav')
 PORT = int(os.environ.get('CLAMD_PORT', '3310'))
 CHUNK = 4096
 
-def scan(path):
-    try:
-        with open(path, 'rb') as f:
-            data = f.read()
-    except OSError as e:
-        print(f'clamdscan: cannot read {path}: {e}', file=sys.stderr)
-        return 2
-
+def scan_bytes(data, label=''):
     try:
         with socket.create_connection((HOST, PORT), timeout=30) as s:
             s.sendall(b'zINSTREAM\0')
@@ -38,9 +31,8 @@ def scan(path):
                 if b'\0' in buf or b'\n' in buf:
                     break
     except OSError as e:
-        # clamd unavailable — pass through to avoid blocking mail
         print(f'clamdscan: clamd unreachable ({HOST}:{PORT}): {e}', file=sys.stderr)
-        return 0
+        return 0  # fail-open
 
     result = resp.decode('utf-8', errors='replace').strip('\0').strip()
     print(result)
@@ -49,6 +41,38 @@ def scan(path):
     if 'ERROR' in result:
         return 2
     return 0
+
+def scan(path):
+    if os.path.isdir(path):
+        # simscan passes the work directory when no MIME parts were extracted
+        # (plain-text message). Scan every regular file in the directory.
+        rc = 0
+        found_files = False
+        for name in os.listdir(path):
+            fpath = os.path.join(path, name)
+            if not os.path.isfile(fpath):
+                continue
+            found_files = True
+            try:
+                with open(fpath, 'rb') as f:
+                    data = f.read()
+            except OSError as e:
+                print(f'clamdscan: cannot read {fpath}: {e}', file=sys.stderr)
+                continue
+            r = scan_bytes(data, label=fpath)
+            if r == 1:
+                return 1
+            if r == 2:
+                rc = 2
+        return rc
+    else:
+        try:
+            with open(path, 'rb') as f:
+                data = f.read()
+        except OSError as e:
+            print(f'clamdscan: cannot read {path}: {e}', file=sys.stderr)
+            return 2
+        return scan_bytes(data, label=path)
 
 # Last non-flag argument is the file to scan
 path = next((a for a in reversed(sys.argv[1:]) if not a.startswith('-')), None)

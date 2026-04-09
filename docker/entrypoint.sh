@@ -435,6 +435,10 @@ if [ ! -f "$QMAILDIR/control/simcontrol" ]; then
     cat > "$QMAILDIR/control/simcontrol" << EOF
 # simscan per-domain control - compiled by simscanmk into simcontrol.cdb.
 # Format: [user@]domain:option=value,...  (empty LHS = catch-all default)
+# Per-domain key: use 'example.com' NOT '@example.com' -- simscan strips the @
+# when looking up recipients (pelookup: domain is example.com).
+# spam_hits is read but spam score comparison is bypassed by --enable-spam-passthru=y;
+# rejection happens only via rspamd-spamc exit code 1 (rspamd action=reject).
 :${RULE}
 EOF
     echo "qmail: simscan simcontrol written (clam=${SIMSCAN_CLAM} spam=${SIMSCAN_SPAM} spam_hits=${SIMSCAN_SPAM_HITS} size_limit=${SIMSCAN_SIZE_LIMIT})"

@@ -233,21 +233,25 @@ simscan → rspamd :11333
                                                                └── composite score → reject
 ```
 
-**Detection logic (from Mailu):**
+**Detection logic (actual implementation):**
 
-| Composite | Expression | Score | Action |
+> Note: rspamd's `oletools.lua` produces only the base `OLETOOLS` symbol (not per-flag
+> sub-symbols like `OLETOOLS_MACRO` or `OLETOOLS_WRITE`). `extended = true` mode fires
+> `OLETOOLS` for any macro with any flags; default mode requires autoexec + non-hex/base64
+> suspicious keywords which most real-world test files don't have.
+
+| Composite | Triggers on | Score | Action |
 |---|---|---|---|
-| `OLETOOLS_MACRO_MRAPTOR` | `(A & W) \| (A & X) \| (W & X)` | 20.0 | reject |
-| `OLETOOLS_MACRO_SUSPICIOUS` | `FLAG \| VBASTOMP \| A` | 20.0 | reject |
+| `OLETOOLS_DETECTED` | `OLETOOLS` (any macro in extended mode) | 20.0 | reject |
 | `OLETOOLS_FAIL` | scan error | — | soft reject |
 
 - [x] Add `oletools` container running olefy (port 11343, internal only)
 - [x] Build custom image: install `oletools` via pip into a venv, download olefy.py (`docker/oletools/Dockerfile`)
 - [x] Run as unprivileged user (`olefy`); use `/dev/shm` for temp files (`OLEFY_TMPDIR`)
 - [x] Add healthcheck (`nc -z localhost 11343`)
-- [x] Add `docker/rspamd/local.d/external_services.conf` — oletools block with mime type + extension filters
-- [x] Add `docker/rspamd/local.d/composites.conf` — `OLETOOLS_MACRO_MRAPTOR` + `OLETOOLS_MACRO_SUSPICIOUS`
-- [x] Add `docker/rspamd/local.d/force_actions.conf` — reject on `OLETOOLS_MACRO_MRAPTOR | OLETOOLS_MACRO_SUSPICIOUS`; soft reject on `OLETOOLS_FAIL`
+- [x] Add `docker/rspamd/local.d/external_services.conf` — oletools block with mime type + extension filters; `extended = true`
+- [x] Add `docker/rspamd/local.d/composites.conf` — `OLETOOLS_DETECTED` composite (wraps `OLETOOLS` with score 20.0)
+- [x] Add `docker/rspamd/local.d/force_actions.conf` — reject on `OLETOOLS_DETECTED`; soft reject on `OLETOOLS_FAIL`
 - [x] No hard `depends_on` — rspamd connects lazily; fail-open if oletools not running
 - [x] `SCAN_MACROS` toggle implemented via compose profile `macros` — `docker compose --profile macros up`
 
@@ -287,8 +291,14 @@ oletools     — Office macro scanning via olefy/olevba           port:  11343 (
 - [x] **GTUBE rejection** — port 25 → `554 Your email is considered spam (15.00 spam-hits)` ✓
 - [x] **EICAR MIME rejection via ClamAV** — `CLAMAV{Eicar-Signature}` symbol fired; rspamd forced reject: `Virus found: Eicar-Signature`; SMTP `554` returned ✓
 
-- [ ] Per-domain simcontrol overrides — add a domain entry, recompile with `simscanmk`, verify
-- [ ] Confirm rspamd web UI shows scan results (http://host:11334)
+- [x] **Per-domain simcontrol overrides** — full investigation completed ✓
+  - Added `example.com:clam=yes,spam=yes,spam_hits=5.0,size_limit=20000000`; `simscanmk` compiled CDB
+  - Key format: **`example.com` NOT `@example.com`** — simscan does `cdb looking up example.com` (strips `@` when looking up recipient domain)
+  - ClamAV toggle (`clam=yes/no`) and `spam` toggle verified — overrides global default `clam=no`
+  - **`spam_hits` threshold is bypassed** by `--enable-spam-passthru=y` compile flag — simscan runs spamc for header tagging only; rejection happens exclusively via rspamd-spamc RC=1 (rspamd action=reject at its own 15.0 threshold), not by simscan score comparison
+  - clamdscan-wrapper updated to handle directory path (simscan passes work dir when message has no MIME attachments)
+  - entrypoint.sh comment updated with correct key format and passthru caveat
+- [x] **Rspamd web UI** — `/stat` confirmed: 31 scanned, 17 rejected, 12 add-header, 2 greylisted, 5 learned ✓
 
 ### Tika
 
@@ -298,11 +308,14 @@ oletools     — Office macro scanning via olefy/olevba           port:  11343 (
 
 ### Oletools (profile: macros)
 
-- [ ] Start stack with `--profile macros`
-- [ ] Send a `.doc` with a benign macro — confirm `OLETOOLS_MACRO_SUSPICIOUS` triggers
-- [ ] Send a `.doc` with auto-exec + write-to-disk macro — confirm `OLETOOLS_MACRO_MRAPTOR` triggers and message is rejected
-- [ ] Simulate oletools unavailable (`docker stop oletools`) — confirm mail flows (fail-open)
-- [ ] Check rspamd web UI symbols for `OLETOOLS_*` entries
+- [x] Start stack with `--profile macros` ✓
+- [x] **XLS with Auto_Open macro** — `OLETOOLS_DETECTED(20.00)` fired; message rejected with score 26.20 ✓
+  - File: `autostart-encrypt-standardpassword.xls` (Auto_Open + Hex/Base64 strings)
+  - olevba flags: AutoExec=A, Suspicious=S (via Hex/Base64)
+  - SMTP `554 Your email is considered spam (26.20 spam-hits)` ✓
+  - Root cause of initial miss: stale Redis cache ("OK" from pre-`extended=true` scan) + wrong composites referencing non-existent sub-symbols
+- [x] **Fail-open** — `docker stop oletools`, same XLS accepted (no OLETOOLS symbols, score ~6) ✓
+- [x] **rspamd web UI** — `OLETOOLS_DETECTED` confirmed in group `oletools`; `OLETOOLS` + `OLETOOLS_FAIL` + `OLETOOLS_ENCRYPTED` in group `external_services` ✓
 
 ### Bayes autolearn via IMAPSieve
 
