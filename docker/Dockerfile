@@ -340,6 +340,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         rspamd \
         curl \
         cron \
+        python3-flask \
     && rm -rf /var/lib/apt/lists/*
 
 # Same pinned UIDs/GIDs as builder — no ownership fix-up needed.
@@ -393,11 +394,14 @@ RUN chmod +x /usr/local/bin/rspamd-spamc \
 COPY docker/lmtp-deliver /var/qmail/bin/lmtp-deliver
 RUN chmod +x /var/qmail/bin/lmtp-deliver
 
+# Domain management REST API
+COPY docker/qmailapi /opt/qmailapi
+
 # Runit service definitions
 # Note: Dovecot is now in a separate container.
 COPY docker/runit /etc/sv
 RUN mkdir -p /etc/service /var/log/qmail \
- && for svc in qmail-smtpd qmail-send qmail-submission qmail-smtps lighttpd vusaged cron; do \
+ && for svc in qmail-smtpd qmail-send qmail-submission qmail-smtps lighttpd vusaged cron qmailapi; do \
       chmod +x /etc/sv/$svc/run /etc/sv/$svc/log/run; \
       mkdir -p /var/log/qmail/$svc; \
       ln -s /etc/sv/$svc /etc/service/$svc; \

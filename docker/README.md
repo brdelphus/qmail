@@ -713,6 +713,76 @@ docker compose -f docker/docker-compose.yml exec qmail \
 
 ---
 
+## Domain management REST API
+
+A Flask REST API runs inside the qmail container on port 8080 (internal only
+by default). It automates the full domain and user lifecycle via the vpopmail
+CLI tools.
+
+Set `QMAIL_API_KEY` in `.env` to enable it (generate with `openssl rand -hex 16`).
+Uncomment the `127.0.0.1:8080:8080` port mapping in `docker-compose.yml` to
+expose it to the host.
+
+All requests require: `Authorization: Bearer <QMAIL_API_KEY>`
+
+### Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/domains` | List all domains |
+| `POST` | `/domains` | Add domain — full setup (see below) |
+| `GET` | `/domains/<domain>` | Get domain info + DNS records |
+| `DELETE` | `/domains/<domain>` | Delete domain |
+| `GET` | `/domains/<domain>/users` | List users |
+| `POST` | `/domains/<domain>/users` | Add user |
+| `DELETE` | `/domains/<domain>/users/<user>` | Delete user |
+| `PUT` | `/domains/<domain>/users/<user>/password` | Change password |
+
+### Add domain — full setup
+
+`POST /domains` with `{"domain": "example.com", "postmaster_password": "secret"}`:
+
+1. `vadddomain` — creates vpopmail domain, adds to `rcpthosts`
+2. Replaces `.qmail-default` with LMTP delivery to Dovecot
+3. `dknewkey` — generates RSA-2048 DKIM key pair
+4. `qmail-newu` — rebuilds `users/assign` so qmail routes the domain
+
+Response includes `dns_records` with all records to publish:
+
+```json
+{
+  "domain": "example.com",
+  "postmaster": "postmaster@example.com",
+  "dns_records": {
+    "MX":    {"host": "@",                 "priority": 10, "value": "mail.youserver.com"},
+    "SPF":   {"host": "@",                 "type": "TXT",  "value": "v=spf1 mx ~all"},
+    "DMARC": {"host": "_dmarc",            "type": "TXT",  "value": "v=DMARC1; p=none; ..."},
+    "DKIM":  {"host": "default._domainkey","type": "TXT",  "record": "default._domainkey.example.com. IN TXT (...)"}
+  }
+}
+```
+
+### Example
+
+```sh
+API=http://127.0.0.1:8080
+KEY=your-api-key
+
+# Add domain
+curl -s -X POST $API/domains \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"domain":"example.com","postmaster_password":"secret"}' | jq .
+
+# Add user
+curl -s -X POST $API/domains/example.com/users \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"user":"alice","password":"pass"}' | jq .
+```
+
+---
+
 ## Dovecot
 
 Dovecot runs in its own container with SQL authentication against MariaDB (no

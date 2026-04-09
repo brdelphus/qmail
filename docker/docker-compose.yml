@@ -154,6 +154,12 @@ services:
       VQADMIN_USER: ${VQADMIN_USER:-admin}
       VQADMIN_PASS: ${VQADMIN_PASS:-}
 
+      # ── Domain management REST API ────────────────────────────────────────────
+      # Bearer token for all API requests. Generate: openssl rand -hex 16
+      # Leave empty to disable the API entirely (returns 503).
+      QMAIL_API_KEY: ${QMAIL_API_KEY:-}
+      QMAIL_API_PORT: ${QMAIL_API_PORT:-8080}
+
       # ── simscan (AV + spam via ClamAV + Rspamd) ──────────────────────────────
       # Master toggle — false bypasses simscan entirely (qmail-dkim → qmail-queue direct)
       SIMSCAN_ENABLE: ${SIMSCAN_ENABLE:-true}
@@ -190,6 +196,7 @@ services:
       - "80:80"     # HTTP (qmailadmin)
       - "465:465"   # SMTPS
       - "587:587"   # Submission
+      # - "127.0.0.1:8080:8080"  # Domain management API (internal — uncomment to expose)
     volumes:
       # Primary volume for qmail control files, queue, vpopmail etc:
       #   /srv/mail/qmail/control     ← /var/qmail/control
