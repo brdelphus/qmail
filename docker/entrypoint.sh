@@ -414,7 +414,9 @@ fi
 # write its working files. simcontrol is written on first run and compiled
 # into simcontrol.cdb on every startup (simscanmk is fast).
 chown clamav:clamav /srv/mail/qmail/simscan 2>/dev/null || true
-if [ ! -f "$QMAILDIR/simscan/simcontrol" ]; then
+# simcontrol lives in control/ (simscanmk reads/writes there); simscan/ is only
+# used for the work dir.  simscanmk segfaults on non-ASCII, so keep comments ASCII.
+if [ ! -f "$QMAILDIR/control/simcontrol" ]; then
     SIMSCAN_CLAM=${SIMSCAN_CLAM:-yes}
     SIMSCAN_SPAM=${SIMSCAN_SPAM:-yes}
     SIMSCAN_SPAM_HITS=${SIMSCAN_SPAM_HITS:-9.0}
@@ -423,19 +425,16 @@ if [ ! -f "$QMAILDIR/simscan/simcontrol" ]; then
 
     # Build the catch-all simcontrol rule from env vars
     RULE="clam=${SIMSCAN_CLAM},spam=${SIMSCAN_SPAM},spam_hits=${SIMSCAN_SPAM_HITS},size_limit=${SIMSCAN_SIZE_LIMIT}"
-    # Blocked attachment extensions: semicolon-separated list → colon-separated for simcontrol
-    # e.g. SIMSCAN_ATTACH=".vbs;.lnk;.scr" → attach=.vbs:.lnk:.scr
+    # Blocked attachment extensions: semicolon-separated list -> colon-separated for simcontrol
+    # e.g. SIMSCAN_ATTACH=".vbs;.lnk;.scr" -> attach=.vbs:.lnk:.scr
     if [ -n "$SIMSCAN_ATTACH" ]; then
         ATTACH_LIST=$(printf '%s' "$SIMSCAN_ATTACH" | tr ';' ':')
         RULE="${RULE},attach=${ATTACH_LIST}"
     fi
 
-    cat > "$QMAILDIR/simscan/simcontrol" << EOF
-# simscan per-domain control — compiled by simscanmk into simcontrol.cdb.
+    cat > "$QMAILDIR/control/simcontrol" << EOF
+# simscan per-domain control - compiled by simscanmk into simcontrol.cdb.
 # Format: [user@]domain:option=value,...  (empty LHS = catch-all default)
-# Examples:
-#   user@example.com:clam=yes,spam=yes,spam_hits=9.0,attach=.vbs:.lnk:.scr
-#   example.com:clam=yes,spam=yes,spam_hits=7.0
 :${RULE}
 EOF
     echo "qmail: simscan simcontrol written (clam=${SIMSCAN_CLAM} spam=${SIMSCAN_SPAM} spam_hits=${SIMSCAN_SPAM_HITS} size_limit=${SIMSCAN_SIZE_LIMIT})"

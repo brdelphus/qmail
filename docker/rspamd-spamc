@@ -37,8 +37,10 @@ SCORE="${SCORE:-0}"
 REQUIRED="${REQUIRED:-15.0}"
 
 case "$ACTION" in
-    reject|"add header"|"rewrite subject"|greylist)
+    reject)
         FLAG=YES ; RC=1 ;;
+    "add header"|"rewrite subject")
+        FLAG=YES ; RC=0 ;;   # tag headers, let Sieve decide — do not reject at SMTP
     *)
         FLAG=NO  ; RC=0 ;;
 esac
