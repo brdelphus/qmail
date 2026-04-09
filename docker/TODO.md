@@ -312,7 +312,7 @@ oletools     — Office macro scanning via olefy/olevba           port:  11343 (
 - [x] **Redis Bayes state** — 37 `RS_<hash>` token keys with `S` (spam) counts confirmed in Redis ✓
 - [x] **learn-ham** — COPY from Junk → INBOX → rspamd logs `learned message as ham` ✓
 - [x] **Bayes classifier runs on every scan** — `bayes_classify.lua` executes; currently inactive because ham class needs ≥ 200 samples (rspamd default minimum); `Currently: 1` confirms count is incrementing ✓
-- [x] **Per-user Bayes** — N/A: `per_user = false` in `classifier-bayes.conf`; global classifier in use; `User:` header forwarded but not used for separate state; intentional — enable `per_user = true` if needed
+- [x] **Per-user Bayes** — `per_user = true` set in `classifier-bayes.conf`; per-user token keys confirmed in Redis: `RStestuser@example.com_<hash>` ✓
 
 ### qmail-smtpd triggers
 
