@@ -280,7 +280,8 @@ When `DNSBL_LAYER=qmail`, blocklist servers come from `QMAIL_DNSBL_SERVERS`
 
 When `SURBL_LAYER=qmail`, the TLD lists (`level2-tlds`, `level3-tlds`) are
 downloaded from `surbl.org` on first use and cached in `control/` (volume-persisted).
-Delete them to force a re-download.
+Delete them to force a re-download. A monthly cron job (23rd at 02:02) keeps them
+current; a daily job (09:02) purges the URI lookup cache in `control/cache/`.
 
 ### SMTP behaviour
 

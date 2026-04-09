@@ -503,6 +503,32 @@ else
     echo "qmail: SURBL layer=rspamd (control/surbl=0)"
 fi
 
+# ── Crontab (written on every startup) ───────────────────────────────────────
+# /etc/cron.d/qmail is rewritten each startup so layer-toggle changes take effect.
+# MAILTO="" suppresses mail delivery of job output (no MTA inside the container).
+cat > /etc/cron.d/qmail << 'EOF'
+MAILTO=""
+
+# Overlimit reset — clear per-user/domain/IP send counters daily at midnight.
+# Counts are stored as files under /var/qmail/overlimit/; removing them resets limits.
+0 0 * * * root find /var/qmail/overlimit/ -maxdepth 1 -mindepth 1 -delete 2>/dev/null
+EOF
+
+if [ "$SURBL_LAYER" = "qmail" ]; then
+    cat >> /etc/cron.d/qmail << 'EOF'
+
+# SURBL cache purge — remove stale URI lookup cache entries daily at 09:02
+2 9 * * * root find /var/qmail/control/cache/ -maxdepth 1 -mindepth 1 -delete 2>/dev/null
+
+# SURBL TLD update — re-download level2/level3 TLD lists from surbl.org monthly on the 23rd
+2 2 23 * * root wget -q -O /var/qmail/control/level3-tlds https://www.surbl.org/static/three-level-tlds 2>/dev/null && wget -q -O /var/qmail/control/level2-tlds https://www.surbl.org/static/two-level-tlds 2>/dev/null
+EOF
+    echo "qmail: cron: overlimit reset + SURBL cache purge + TLD update scheduled"
+else
+    echo "qmail: cron: overlimit reset scheduled"
+fi
+chmod 644 /etc/cron.d/qmail
+
 # ── Rebuild users/assign + CDB ───────────────────────────────────────────────
 # /var/qmail/users is not a named volume — it is lost on container recreation.
 # Regenerate it every startup from the vpopmail domains directory.

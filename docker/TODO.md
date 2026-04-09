@@ -281,6 +281,9 @@ by exactly one layer; the other is automatically disabled at container start.
 - [x] `docker/runit/qmail-smtpd/run` + `qmail-smtps/run` + `qmail-submission/run` — `DKIMVERIFY` read from `control/dkimverify` at startup; `RELAYCLIENT_NODKIMVERIFY=1` set on all submission ports
 - [x] All four `*_LAYER` vars passed to both `qmail` and `rspamd` services in `docker-compose.yml`
 - [x] Documented in `.env.example` (Feature layer toggles section)
+- [x] `cron` runit service added — writes `/etc/cron.d/qmail` on every startup:
+  - **Always**: overlimit reset (daily midnight) — removes files from `/var/qmail/overlimit/`
+  - **When `SURBL_LAYER=qmail`**: SURBL cache purge (daily 09:02), TLD update (monthly 23rd)
 
 ---
 
