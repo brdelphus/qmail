@@ -294,7 +294,7 @@ oletools     — Office macro scanning via olefy/olevba           port:  11343 (
 
 - [x] Tika fail-open — stopped container, mail still got `250 ok` ✓
 - [x] **PDF attachment** — `TIKA_EXTRACTED(0.00){application/pdf(22b);}` confirmed in scan log ✓
-- [ ] Verify `TIKA_EXTRACTED` appears in rspamd web UI symbol list
+- [x] **`TIKA_EXTRACTED` in rspamd symbol list** — confirmed via `/symbols` API: group `tika`, weight `0.0`, description correct ✓
 
 ### Oletools (profile: macros)
 
