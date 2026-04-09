@@ -16,10 +16,14 @@ DUALSTACK=$(cat $QMAILDIR/control/dualstack 2>/dev/null || echo 0)
 CERTFILE=$QMAILDIR/control/servercert.pem
 DHFILE=$QMAILDIR/control/dh4096.pem
 
-# Auth required on port 465 (submission over implicit TLS)
-# DISABLETLS=1 prevents qmail-smtpd from trying its own STARTTLS —
-# the connection is already encrypted by sslserver before smtpd sees it.
+# Auth required on port 465 (submission over implicit TLS).
+# sslserver encrypts the connection before qmail-smtpd runs, so smtpd's
+# own OpenSSL context is never initialised. DISABLETLS=1 stops smtpd from
+# advertising STARTTLS (already encrypted). FORCETLS=0 disables smtpd's
+# internal TLS-for-AUTH requirement so AUTH is offered despite the context
+# being uninitialised. SMTPAUTH="!" still requires the client to authenticate.
 export DISABLETLS=1
+export FORCETLS=0
 export SMTPAUTH="!"
 export CHKUSER_START=ALWAYS
 export FORCEAUTHMAILFROM=1
@@ -41,10 +45,13 @@ if [ -f $QMAILDIR/control/smtpplugins ] && [ -d $QMAILDIR/plugins ]; then
 fi
 
 # Rate limiting — same config as port 587
-export RCPTCHECK="$QMAILDIR/bin/rcptcheck-overlimit"
-export RCPTCHECKRELAYCLIENT="1"
-export OVERLIMITDIR="$QMAILDIR/overlimit"
-export LIMITSCONTROLFILE="$QMAILDIR/control/relaylimits"
+# Guard: only enable if the binary was compiled into the image.
+if [ -x "$QMAILDIR/bin/rcptcheck-overlimit" ]; then
+    export RCPTCHECK="$QMAILDIR/bin/rcptcheck-overlimit"
+    export RCPTCHECKRELAYCLIENT="1"
+    export OVERLIMITDIR="$QMAILDIR/overlimit"
+    export LIMITSCONTROLFILE="$QMAILDIR/control/relaylimits"
+fi
 
 export CERTFILE="$CERTFILE"
 export KEYFILE="$CERTFILE"
@@ -52,7 +59,7 @@ export DHFILE="$DHFILE"
 
 exec chpst -m "$SOFTLIMIT" \
     /usr/local/bin/sslserver -seV -Rp -l "$LOCAL" \
-    -x ${TCPRULES_DIR}/tcp.smtp.cdb -c "$MAXSMTPD" \
+    -x ${TCPRULES_DIR}/tcp.smtps.cdb -c "$MAXSMTPD" \
     -u "$QMAILDUID" -g "$NOFILESGID" "$BINDADDR" 465 \
     $QMAILDIR/bin/qmail-smtpd \
     ~vpopmail/bin/vchkpw /bin/true 2>&1

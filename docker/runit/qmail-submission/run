@@ -34,10 +34,13 @@ fi
 # Rate limiting — restrict how many messages an auth user/domain/IP may send.
 # control/relaylimits format: "user@domain:N", "domain:N", "IP:N", ":N" (default)
 # 0 = unlimited for that entry. Counts reset by cron via greylisting_cleanup or similar.
-export RCPTCHECK="$QMAILDIR/bin/rcptcheck-overlimit"
-export RCPTCHECKRELAYCLIENT="1"
-export OVERLIMITDIR="$QMAILDIR/overlimit"
-export LIMITSCONTROLFILE="$QMAILDIR/control/relaylimits"
+# Guard: only enable if the binary was compiled into the image.
+if [ -x "$QMAILDIR/bin/rcptcheck-overlimit" ]; then
+    export RCPTCHECK="$QMAILDIR/bin/rcptcheck-overlimit"
+    export RCPTCHECKRELAYCLIENT="1"
+    export OVERLIMITDIR="$QMAILDIR/overlimit"
+    export LIMITSCONTROLFILE="$QMAILDIR/control/relaylimits"
+fi
 
 exec chpst -m "$SOFTLIMIT" \
     /usr/local/bin/tcpserver -v -R -l "$LOCAL" \
