@@ -255,7 +255,10 @@ services:
     # port 9998 is internal only — rspamd connects over the compose network
 
   rspamd:
-    image: rspamd/rspamd:latest
+    build:
+      context: ..
+      dockerfile: docker/rspamd/Dockerfile
+    image: rspamd:latest
     restart: unless-stopped
     depends_on:
       redis:
@@ -265,8 +268,8 @@ services:
       tika:
         condition: service_started   # rspamd connects lazily; no need to wait for healthy
     environment:
-      # Web UI password — generate hash with: docker compose exec rspamd rspamadm pw
-      # Then replace this with the $2$... hash in rspamd/local.d/worker-controller.inc
+      # Web UI + controller password — hash is generated at startup from this value.
+      # Change in .env; no manual hash generation needed.
       RSPAMD_PASSWORD: ${RSPAMD_PASSWORD:-changeme_rspamd}
     volumes:
       - ./rspamd/local.d:/etc/rspamd/local.d:ro
@@ -296,10 +299,11 @@ services:
       MYSQL_PASS: ${MYSQL_PASS:-changeme}
 
       # ── Rspamd — for IMAPSieve spam/ham learning ──────────────────────────────
-      # Dovecot pipes messages to rspamd /learn_spam or /learn_ham when the user
-      # moves mail to/from the Junk or Spam folder.
+      # Dovecot pipes messages to rspamd /learnspam or /learnham (controller port)
+      # when the user moves mail to/from the Junk or Spam folder.
       RSPAMD_HOST: rspamd
       RSPAMD_PORT: ${RSPAMD_PORT:-11333}
+      RSPAMD_CONTROLLER_PORT: ${RSPAMD_CONTROLLER_PORT:-11334}
       RSPAMD_PASSWORD: ${RSPAMD_PASSWORD:-changeme_rspamd}
 
       # ── Service toggles ─────────────────────────────────────────────────────

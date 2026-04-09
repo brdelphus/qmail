@@ -708,8 +708,9 @@ qmail-local → /var/qmail/bin/lmtp-deliver → dovecot :24 → Sieve → Maildi
 | Variable | Default | Description |
 |---|---|---|
 | `RSPAMD_HOST` | `rspamd` | rspamd container hostname for spam/ham learning |
-| `RSPAMD_PORT` | `11333` | rspamd HTTP API port |
-| `RSPAMD_PASSWORD` | `changeme_rspamd` | rspamd controller password (same as `RSPAMD_PASSWORD` in the rspamd service) |
+| `RSPAMD_PORT` | `11333` | rspamd scanner HTTP API port |
+| `RSPAMD_CONTROLLER_PORT` | `11334` | rspamd controller port (used by learn-spam/ham scripts) |
+| `RSPAMD_PASSWORD` | `changeme_rspamd` | rspamd controller password — must match `RSPAMD_PASSWORD` in the rspamd service |
 
 ---
 
@@ -754,8 +755,8 @@ learning automatically — no client plugin needed. Moving it back out (not to
 Trash) teaches ham.
 
 ```
-Move to Junk/Spam   →  curl POST rspamd:11333/learn_spam  (User: alice@example.com)
-Move out of Junk    →  curl POST rspamd:11333/learn_ham   (User: alice@example.com)
+Move to Junk/Spam   →  POST rspamd:11334/learnspam  (Password: …, User: alice@example.com)
+Move out of Junk    →  POST rspamd:11334/learnham   (Password: …, User: alice@example.com)
 ```
 
 The authenticated IMAP username is captured by the Sieve script and forwarded
@@ -765,8 +766,8 @@ each train their own classifier without cross-contamination.
 
 The scripts live in the image at `/etc/dovecot/sieve/` and are pre-compiled at
 build time. rspamd credentials are written to `/etc/dovecot/sieve/rspamd.env`
-(mode `0600`) at container start from the `RSPAMD_*` env vars — they never
-appear in the scripts themselves.
+(owned by `vpopmail`, mode `0600`) at container start from the `RSPAMD_*` env
+vars — they never appear in the scripts themselves.
 
 ---
 
@@ -839,22 +840,25 @@ Web UI is available at `http://<host>:11334/`.
 
 | Variable | Default | Description |
 |---|---|---|
-| `RSPAMD_PASSWORD` | `changeme_rspamd` | Web UI + controller password — generate hash with `docker compose exec rspamd rspamadm pw` |
+| `RSPAMD_PASSWORD` | `changeme_rspamd` | Web UI + controller password — set in `.env`, hash generated automatically at container start |
 | `RSPAMD_HOST` | `rspamd` | rspamd hostname used by the `rspamd-spamc` wrapper in the qmail container |
-| `RSPAMD_PORT` | `11333` | rspamd HTTP API port |
+| `RSPAMD_PORT` | `11333` | rspamd scanner HTTP API port |
 | `RSPAMD_TAG_ONLY` | `false` | Tag-only mode — rspamd scores and adds headers but simscan never rejects on spam score |
 
-### Setting a proper web UI password
+### Controller password
+
+The rspamd controller password (used by the web UI and Dovecot learn scripts)
+is configured via the `RSPAMD_PASSWORD` env var. The container entrypoint
+runs `rspamadm pw` at startup to hash the value and writes it to
+`/etc/rspamd/override.d/worker-controller.inc`.
+
+To change the password, update `RSPAMD_PASSWORD` in `.env` and restart:
 
 ```sh
-docker compose -f docker/docker-compose.yml exec rspamd rspamadm pw
-# Copy the $2$... hash, then write it to:
-# docker/rspamd/local.d/worker-controller.inc
-```
+# In .env:
+RSPAMD_PASSWORD=your_strong_password
 
-```
-password = "$2$...hash...";
-enable_password = "$2$...hash...";
+docker compose -f docker/docker-compose.yml up -d rspamd
 ```
 
 ### Rspamd local config
