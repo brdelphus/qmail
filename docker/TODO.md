@@ -263,3 +263,63 @@ redis        — Rspamd Bayes + fuzzy state                       port:  6379  (
 tika         — attachment text extraction for rspamd            port:  9998  (internal)
 oletools     — Office macro scanning via olefy/olevba           port:  11343 (internal)
 ```
+
+---
+
+## Step 9 — Integration testing
+
+### Bugs found during testing (must fix before re-testing)
+
+| # | Bug | Impact |
+|---|-----|--------|
+| ~~A~~ | ~~**rspamd-spamc CRLF** — awk `/^$/` doesn't match `\r\n` blank line from qmail DATA; X-Spam headers never inserted; simscan always reads score 0.00 → CLEAN~~ | **Fixed**: root cause was `rspamc` failing to mmap `libicudata.so.72` under `chpst -m 64MB` RLIMIT_AS; switched to `curl` + `/checkv2` HTTP API |
+| B | **Tika not wired** — `local.d/tika.conf` lacks the `external_services { tika { } }` block; rspamd never submits attachments to Tika | Attachment text extraction disabled |
+| C | **rspamd.env permissions** — `/etc/dovecot/sieve/rspamd.env` is `root:root 600`; sieve runs as mail user and cannot source it | Bayes spam/ham learning via IMAPSieve broken |
+
+### Rspamd / simscan
+
+- [x] Confirm `CLEAN` vs `SPAM` log entries in the qmail-smtpd log — format confirmed: `simscan:[qp]:CLEAN (score/required/max):time:subject:ip::rcpt`
+- [x] `RSPAMD_TAG_ONLY=false` confirmed in process env (port 25 tcpserver)
+- [x] `SIMSCAN_ENABLE=true` confirmed; `DKIMQUEUE=/var/qmail/bin/simscan`
+- [x] `SIMSCAN_ATTACH` — empty; no extension blocking configured (expected default)
+- [x] **GTUBE rejection** — port 25 → `554 Your email is considered spam (15.00 spam-hits)` ✓
+- [ ] EICAR MIME rejection via ClamAV
+
+- [ ] Per-domain simcontrol overrides — add a domain entry, recompile with `simscanmk`, verify
+- [ ] Confirm rspamd web UI shows scan results (http://host:11334)
+
+### Tika
+
+- [x] Tika fail-open — stopped container, mail still got `250 ok` ✓
+- [ ] **[blocked: bug B]** PDF/DOCX attachment — no `TIKA_*` symbols appear; rspamd never calls Tika
+- [ ] **[blocked: bug B]** Check rspamd web UI symbols for `TIKA_*` entries on scanned attachments
+
+### Oletools (profile: macros)
+
+- [ ] Start stack with `--profile macros`
+- [ ] Send a `.doc` with a benign macro — confirm `OLETOOLS_MACRO_SUSPICIOUS` triggers
+- [ ] Send a `.doc` with auto-exec + write-to-disk macro — confirm `OLETOOLS_MACRO_MRAPTOR` triggers and message is rejected
+- [ ] Simulate oletools unavailable (`docker stop oletools`) — confirm mail flows (fail-open)
+- [ ] Check rspamd web UI symbols for `OLETOOLS_*` entries
+
+### Bayes autolearn via IMAPSieve
+
+- [x] LMTP delivery to Dovecot — `nc dovecot 24` → `250 2.0.0 Saved` ✓
+- [x] IMAP login, Junk folder creation, message move all work ✓
+- [ ] **[blocked: bug C]** IMAPSieve `learn-spam.sieve` fires but fails: `cannot open /etc/dovecot/sieve/rspamd.env: Permission denied`
+- [ ] **[blocked: bug C]** Redis Bayes state empty — no successful learn calls
+- [ ] Move message back out of Junk → `/learn_ham` (retest after bug C fix)
+- [ ] Per-user Bayes: train two accounts differently, confirm rspamd scores differ
+
+### qmail-smtpd triggers
+
+- [x] **Greetdelay / DROP_PRE_GREET** — immediate EHLO → `554 SMTP protocol violation` ✓
+- [x] **BRTLIMIT=2** — `421 too many invalid addresses` after 2nd bad RCPT ✓
+- [x] **Rate limiting** — 4th relay message on port 465 → `421 you have exceeded your messaging limits` ✓
+- [ ] **CHKUSER_WRONGRCPTLIMIT=3** — BRTLIMIT=2 fires first; need to raise BRTLIMIT or test separately
+- [ ] **SPF reject** — skip; no DNS control in test env
+- [ ] **DKIM verify** — send DKIM-signed mail, check log for `dkim=pass`; broken sig → `dkim=fail`
+- [ ] **SURBL** — set `control/surbl=1`, send mail with SURBL-listed URL, confirm rejection
+- [ ] **Greylisting (jgreylist)** — set `control/jgreylist=1`, confirm 4xx defer on first attempt, pass on retry
+- [ ] **Greylisting (qmail-spp)** — enable `GREYLIST_USER`, verify MySQL triplet state
+- [ ] **DNSBL** — add entry to `control/dnsbllist`, send from listed IP, confirm rejection

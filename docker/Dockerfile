@@ -338,6 +338,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         clamav-daemon \
         python3 \
         rspamd \
+        curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Same pinned UIDs/GIDs as builder — no ownership fix-up needed.

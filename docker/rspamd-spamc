@@ -1,7 +1,9 @@
 #!/bin/sh
-# rspamd-spamc — spamc-compatible wrapper using rspamc for simscan integration.
-# Reads a mail message from stdin, queries rspamd, prepends X-Spam-* headers,
-# and outputs the modified message. Exit 0=ham/passthru, 1=spam.
+# rspamd-spamc — spamc-compatible wrapper using curl for simscan integration.
+# Reads a mail message from stdin, queries rspamd HTTP API, prepends X-Spam-*
+# headers, and outputs the modified message. Exit 0=ham/passthru, 1=spam.
+#
+# Uses curl (not rspamc) to avoid ICU library mmap issues under chpst -m limits.
 #
 # Env:
 #   RSPAMD_HOST      (default: rspamd)
@@ -17,21 +19,23 @@ trap 'rm -f "$TMPFILE"' EXIT
 
 cat > "$TMPFILE"
 
-RESULT=$(/usr/bin/rspamc -h "${RSPAMD_HOST}:${RSPAMD_PORT}" < "$TMPFILE" 2>/dev/null)
+# POST message to rspamd HTTP API; response is JSON
+RESULT=$(curl -s --max-time 10 \
+    -X POST \
+    -H "Content-Type: message/rfc822" \
+    --data-binary "@${TMPFILE}" \
+    "http://${RSPAMD_HOST}:${RSPAMD_PORT}/checkv2" 2>/dev/null)
+
 if [ $? -ne 0 ] || [ -z "$RESULT" ]; then
     # rspamd unavailable — pass through without marking
     cat "$TMPFILE"
     exit 0
 fi
 
-# Parse "Score: 1.30 / 15.00" (handles both inline and separate-line formats)
-SCORE_LINE=$(printf '%s\n' "$RESULT" | grep -i 'score:' | head -1)
-SCORE=$(printf '%s\n' "$SCORE_LINE" | grep -oE '[0-9]+\.[0-9]+' | head -1)
-REQUIRED=$(printf '%s\n' "$SCORE_LINE" | grep -oE '[0-9]+\.[0-9]+' | tail -1)
-
-# Parse "Action: no action" or "Metric default; Action: spam; ..."
-ACTION=$(printf '%s\n' "$RESULT" | grep -i 'action:' | head -1 \
-    | sed 's/.*[Aa]ction:[[:space:]]*//' | sed 's/[;].*//' | tr -d '\r\n')
+# Parse JSON: "score":1.30  "required_score":15.00  "action":"reject"
+SCORE=$(printf '%s\n' "$RESULT" | grep -oE '"score"[[:space:]]*:[[:space:]]*[0-9]+(\.[0-9]+)?' | head -1 | grep -oE '[0-9]+(\.[0-9]+)?')
+REQUIRED=$(printf '%s\n' "$RESULT" | grep -oE '"required_score"[[:space:]]*:[[:space:]]*[0-9]+(\.[0-9]+)?' | head -1 | grep -oE '[0-9]+(\.[0-9]+)?')
+ACTION=$(printf '%s\n' "$RESULT" | grep -oE '"action"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | grep -oE '"[^"]*"$' | tr -d '"')
 
 SCORE="${SCORE:-0}"
 REQUIRED="${REQUIRED:-15.0}"
@@ -39,7 +43,7 @@ REQUIRED="${REQUIRED:-15.0}"
 case "$ACTION" in
     reject)
         FLAG=YES ; RC=1 ;;
-    "add header"|"rewrite subject")
+    "add header"|"rewrite subject"|"add_header"|"rewrite_subject")
         FLAG=YES ; RC=0 ;;   # tag headers, let Sieve decide — do not reject at SMTP
     *)
         FLAG=NO  ; RC=0 ;;
@@ -51,12 +55,14 @@ if [ "${RSPAMD_TAG_ONLY:-false}" = "true" ]; then
     RC=0
 fi
 
-# Insert X-Spam-* headers before the blank line (header/body separator)
+# Insert X-Spam-* headers before the blank line (header/body separator).
+# qmail queue files use bare LF; the separator is an empty line matching /^$/.
+# /^\r?$/ handles both LF and CRLF in case the script is called with raw SMTP data.
 awk -v flag="$FLAG" -v score="$SCORE" -v req="$REQUIRED" '
-    !done && /^$/ {
-        print "X-Spam-Flag: " flag
-        print "X-Spam-Status: " (flag == "YES" ? "Yes" : "No") \
-              ", score=" score " required=" req " tests=rspamd"
+    !done && /^\r?$/ {
+        printf "X-Spam-Flag: %s\r\n", flag
+        printf "X-Spam-Status: %s, score=%s required=%s tests=rspamd\r\n", \
+               (flag == "YES" ? "Yes" : "No"), score, req
         done = 1
     }
     { print }
