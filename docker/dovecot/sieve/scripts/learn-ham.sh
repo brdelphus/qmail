@@ -8,9 +8,11 @@
 
 USERNAME="${1:-}"
 
+RSPAMD_CONTROLLER_PORT=${RSPAMD_CONTROLLER_PORT:-11334}
+
 exec /usr/bin/curl --silent --show-error \
     -X POST \
     -H "Password: ${RSPAMD_PASSWORD}" \
     ${USERNAME:+-H "User: ${USERNAME}"} \
-    "http://${RSPAMD_HOST}:${RSPAMD_PORT}/learn_ham" \
+    "http://${RSPAMD_HOST}:${RSPAMD_CONTROLLER_PORT}/learnham" \
     --data-binary @-
