@@ -5,32 +5,111 @@ set -e
 # Configures services based on env vars and starts Dovecot.
 
 SQL_CONF=/etc/dovecot/dovecot-sql.conf.ext
+LDAP_CONF=/etc/dovecot/dovecot-ldap.conf.ext
 LISTENER_CONF=/etc/dovecot/conf.d/10-listeners.conf
+AUTH_BACKEND_CONF=/etc/dovecot/conf.d/auth-backend.conf
 
-# ── Validate required environment variables ──────────────────────────────────
-if [ -z "$MYSQL_HOST" ]; then
-    echo "ERROR: MYSQL_HOST is not set" >&2
+mkdir -p /etc/dovecot/conf.d
+
+DOVECOT_AUTH_DRIVER=${DOVECOT_AUTH_DRIVER:-mysql}
+
+# ── Auth backend configuration ─────────────────────────────────────────────────
+
+case "$DOVECOT_AUTH_DRIVER" in
+
+  mysql|pgsql)
+    if [ "$DOVECOT_AUTH_DRIVER" = "mysql" ]; then
+        DB_HOST=${MYSQL_HOST:?ERROR: MYSQL_HOST is not set}
+        DB_PORT=${MYSQL_PORT:-3306}
+        DB_NAME=${MYSQL_DB:?ERROR: MYSQL_DB is not set}
+        DB_USER=${MYSQL_USER:?ERROR: MYSQL_USER is not set}
+        DB_PASS=${MYSQL_PASS:?ERROR: MYSQL_PASS is not set}
+    else
+        DB_HOST=${PGSQL_HOST:?ERROR: PGSQL_HOST is not set}
+        DB_PORT=${PGSQL_PORT:-5432}
+        DB_NAME=${PGSQL_DB:?ERROR: PGSQL_DB is not set}
+        DB_USER=${PGSQL_USER:?ERROR: PGSQL_USER is not set}
+        DB_PASS=${PGSQL_PASS:?ERROR: PGSQL_PASS is not set}
+    fi
+
+    # Write driver + connect line prepended to the static query file
+    {
+        printf 'driver = %s\n' "$DOVECOT_AUTH_DRIVER"
+        printf 'connect = host=%s port=%s dbname=%s user=%s password=%s\n' \
+            "$DB_HOST" "$DB_PORT" "$DB_NAME" "$DB_USER" "$DB_PASS"
+        printf '\n'
+        cat "$SQL_CONF"
+    } > "${SQL_CONF}.tmp"
+    mv "${SQL_CONF}.tmp" "$SQL_CONF"
+    chmod 600 "$SQL_CONF"
+    chown root:root "$SQL_CONF"
+
+    cat > "$AUTH_BACKEND_CONF" << 'EOF'
+passdb {
+  driver = sql
+  args   = /etc/dovecot/dovecot-sql.conf.ext
+}
+
+userdb {
+  driver = sql
+  args   = /etc/dovecot/dovecot-sql.conf.ext
+}
+EOF
+    echo "dovecot: auth driver=$DOVECOT_AUTH_DRIVER ($DB_USER@$DB_HOST:$DB_PORT/$DB_NAME)"
+    ;;
+
+  ldap)
+    LDAP_HOST=${LDAP_HOST:?ERROR: LDAP_HOST is not set}
+    LDAP_PORT=${LDAP_PORT:-389}
+    LDAP_BASE=${LDAP_BASE:?ERROR: LDAP_BASE is not set}
+    LDAP_BIND_DN=${LDAP_BIND_DN:-}
+    LDAP_BIND_PW=${LDAP_BIND_PW:-}
+    LDAP_TLS=${LDAP_TLS:-no}
+    # Default filter and attribute mapping match the standard vpopmail LDAP schema
+    # (objectClass=qmailUser, mail=user@domain). Override if your schema differs.
+    LDAP_USER_FILTER=${LDAP_USER_FILTER:-(&(objectClass=qmailUser)(mail=%u))}
+    LDAP_PASS_ATTRS=${LDAP_PASS_ATTRS:-userPassword=password}
+    LDAP_USER_ATTRS=${LDAP_USER_ATTRS:-homeDirectory=home,=uid=89,=gid=2109}
+
+    cat > "$LDAP_CONF" << EOF
+hosts = $LDAP_HOST:$LDAP_PORT
+ldap_version = 3
+tls = $LDAP_TLS
+base = $LDAP_BASE
+dn = $LDAP_BIND_DN
+dnpass = $LDAP_BIND_PW
+scope = subtree
+auth_bind = no
+default_pass_scheme = CRYPT
+pass_filter = $LDAP_USER_FILTER
+pass_attrs = $LDAP_PASS_ATTRS
+user_filter = $LDAP_USER_FILTER
+user_attrs = $LDAP_USER_ATTRS
+iterate_filter = (objectClass=qmailUser)
+iterate_attrs = mail=user
+EOF
+    chmod 600 "$LDAP_CONF"
+    chown root:root "$LDAP_CONF"
+
+    cat > "$AUTH_BACKEND_CONF" << 'EOF'
+passdb {
+  driver = ldap
+  args   = /etc/dovecot/dovecot-ldap.conf.ext
+}
+
+userdb {
+  driver = ldap
+  args   = /etc/dovecot/dovecot-ldap.conf.ext
+}
+EOF
+    echo "dovecot: auth driver=ldap ($LDAP_HOST:$LDAP_PORT base=$LDAP_BASE)"
+    ;;
+
+  *)
+    echo "ERROR: unknown DOVECOT_AUTH_DRIVER=$DOVECOT_AUTH_DRIVER (use mysql, pgsql, or ldap)" >&2
     exit 1
-fi
-if [ -z "$MYSQL_USER" ] || [ -z "$MYSQL_PASS" ] || [ -z "$MYSQL_DB" ]; then
-    echo "ERROR: MYSQL_USER, MYSQL_PASS, or MYSQL_DB is missing" >&2
-    exit 1
-fi
-
-MYSQL_PORT=${MYSQL_PORT:-3306}
-
-# ── Write SQL connection string to dovecot-sql.conf.ext ───────────────────────
-# Replace placeholder tokens with actual credentials
-sed -i "s/MYSQL_HOST/${MYSQL_HOST}/g" "$SQL_CONF"
-sed -i "s/MYSQL_PORT/${MYSQL_PORT}/g" "$SQL_CONF"
-sed -i "s/MYSQL_DB/${MYSQL_DB}/g" "$SQL_CONF"
-sed -i "s/MYSQL_USER/${MYSQL_USER}/g" "$SQL_CONF"
-sed -i "s/MYSQL_PASS/${MYSQL_PASS}/g" "$SQL_CONF"
-
-chmod 600 "$SQL_CONF"
-chown root:root "$SQL_CONF"
-
-echo "dovecot: SQL auth configured ($MYSQL_USER@$MYSQL_HOST:$MYSQL_PORT/$MYSQL_DB)"
+    ;;
+esac
 
 # ── Generate listener configuration based on env vars ─────────────────────────
 # Defaults: SSL ports enabled, plain ports disabled

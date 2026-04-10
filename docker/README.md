@@ -160,8 +160,8 @@ independently of the vpopmail backend.
 | Backend | Build arg | Dovecot auth | qmail-spp greylisting | jgreylist / rspamd | qmailadmin |
 |---|---|---|---|---|---|
 | `mysql` *(default)* | `VPOPMAIL_AUTH=mysql` | ✓ out of the box | ✓ | ✓ | ✓ |
-| `pgsql` | `VPOPMAIL_AUTH=pgsql` | ✓ needs pgsql config | ✗ plugin MySQL-only | ✓ | ✓ |
-| `ldap` | `VPOPMAIL_AUTH=ldap` | ✓ needs LDAP config | ✗ plugin MySQL-only | ✓ | ✓ |
+| `pgsql` | `VPOPMAIL_AUTH=pgsql` | ✓ set `DOVECOT_AUTH_DRIVER=pgsql` + `PGSQL_*` vars | ✗ plugin MySQL-only | ✓ | ✓ |
+| `ldap` | `VPOPMAIL_AUTH=ldap` | ✓ set `DOVECOT_AUTH_DRIVER=ldap` + `LDAP_*` vars | ✗ plugin MySQL-only | ✓ | ✓ |
 | `cdb` | `VPOPMAIL_AUTH=cdb` | ✗ no CDB driver | ✗ plugin MySQL-only | ✓ | ✓ |
 | `passwd` | `VPOPMAIL_AUTH=passwd` | ✗ | ✗ plugin MySQL-only | ✓ | ✓ |
 

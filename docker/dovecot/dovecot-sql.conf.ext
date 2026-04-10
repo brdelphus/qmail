@@ -1,26 +1,21 @@
-# Dovecot SQL authentication configuration
-# Queries the vpopmail table in MariaDB for password and user info.
-# Connection string is written by entrypoint.sh from env vars.
+# Dovecot SQL authentication — driver and connect line written by entrypoint.sh.
+# Supports mysql (MariaDB) and pgsql (PostgreSQL) — same vpopmail schema for both.
+# This file is chmod 600 at runtime; do not store credentials here in the image.
 
-# Database connection — filled by entrypoint.sh
-driver = mysql
-connect = host=MYSQL_HOST port=MYSQL_PORT dbname=MYSQL_DB user=MYSQL_USER password=MYSQL_PASS
+# driver and connect are prepended by entrypoint.sh:
+#   driver = mysql | pgsql
+#   connect = host=... port=... dbname=... user=... password=...
 
-# Password scheme: vpopmail uses {CRYPT}$1$... (MD5-crypt) or {CRYPT}$5$... (SHA256)
-# The default_pass_scheme handles the {CRYPT} prefix automatically.
 default_pass_scheme = CRYPT
 
 # Password query — authenticate user
-# %n = username (local part)
-# %d = domain
+# %n = local part (username), %d = domain
 password_query = SELECT pw_passwd AS password FROM vpopmail \
   WHERE pw_name = '%n' AND pw_domain = '%d'
 
-# User query — get home directory, uid, gid
-# UID 89 = vpopmail user
-# GID 2109 = vchkpw group
-# Note: vpopmail stores pw_dir as /home/vpopmail/domains/... but Dovecot
-# container mounts domains at /srv/mail/vpopmail/domains/..., so we translate.
+# User query — resolve home directory, uid, gid
+# vpopmail stores pw_dir as /home/vpopmail/domains/... but the Dovecot container
+# mounts domains at /srv/mail/vpopmail/domains/..., so the path is translated.
 user_query = SELECT \
   REPLACE(pw_dir, '/home/vpopmail/domains', '/srv/mail/vpopmail/domains') AS home, \
   89 AS uid, 2109 AS gid FROM vpopmail \

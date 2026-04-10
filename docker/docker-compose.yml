@@ -316,12 +316,35 @@ services:
       qmail:
         condition: service_started
     environment:
-      # ── MariaDB — must match the mariadb service above ───────────────────────
+      # ── Auth backend ─────────────────────────────────────────────────────────
+      # Select Dovecot's auth driver: mysql (default), pgsql, or ldap.
+      # Must match the vpopmail backend the qmail image was built with.
+      DOVECOT_AUTH_DRIVER: ${DOVECOT_AUTH_DRIVER:-mysql}
+
+      # ── MariaDB (used when DOVECOT_AUTH_DRIVER=mysql) ────────────────────────
       MYSQL_HOST: mariadb
       MYSQL_PORT: ${MYSQL_PORT:-3306}
       MYSQL_DB: ${MYSQL_DB:-vpopmail}
       MYSQL_USER: ${MYSQL_USER:-vpopmail}
       MYSQL_PASS: ${MYSQL_PASS:-changeme}
+
+      # ── PostgreSQL (used when DOVECOT_AUTH_DRIVER=pgsql) ─────────────────────
+      PGSQL_HOST: ${PGSQL_HOST:-}
+      PGSQL_PORT: ${PGSQL_PORT:-5432}
+      PGSQL_DB: ${PGSQL_DB:-vpopmail}
+      PGSQL_USER: ${PGSQL_USER:-}
+      PGSQL_PASS: ${PGSQL_PASS:-}
+
+      # ── LDAP (used when DOVECOT_AUTH_DRIVER=ldap) ────────────────────────────
+      LDAP_HOST: ${LDAP_HOST:-}
+      LDAP_PORT: ${LDAP_PORT:-389}
+      LDAP_BASE: ${LDAP_BASE:-}
+      LDAP_BIND_DN: ${LDAP_BIND_DN:-}
+      LDAP_BIND_PW: ${LDAP_BIND_PW:-}
+      LDAP_TLS: ${LDAP_TLS:-no}
+      LDAP_USER_FILTER: ${LDAP_USER_FILTER:-}
+      LDAP_PASS_ATTRS: ${LDAP_PASS_ATTRS:-}
+      LDAP_USER_ATTRS: ${LDAP_USER_ATTRS:-}
 
       # ── Rspamd — for IMAPSieve spam/ham learning ──────────────────────────────
       # Dovecot pipes messages to rspamd /learnspam or /learnham (controller port)
