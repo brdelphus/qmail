@@ -85,7 +85,7 @@ def _rebuild_users():
     return None
 
 
-def _dkim_setup(domain):
+def _dkim_setup(domain, key_type='rsa', key_bits=2048):
     """
     Generate DKIM key for domain if it does not exist.
     Returns (dns_record_str, error_str).
@@ -97,9 +97,11 @@ def _dkim_setup(domain):
     pub_file = f'{CONTROL}/domainkeys/{domain}/default.pub'
 
     if not os.path.exists(key_file):
-        out, err, rc = _run([
-            f'{QMAILDIR}/bin/dknewkey', '-d', domain, '-t', 'rsa', '-b', '2048', 'default'
-        ])
+        cmd = [f'{QMAILDIR}/bin/dknewkey', '-d', domain, '-t', key_type]
+        if key_type == 'rsa':
+            cmd += ['-b', str(key_bits)]
+        cmd.append('default')
+        out, err, rc = _run(cmd)
         if rc != 0:
             return None, f'dknewkey: {err or out}'
 
@@ -143,6 +145,8 @@ def add_domain():
     data     = request.get_json(force=True, silent=True) or {}
     domain   = data.get('domain', '').strip().lower()
     password = data.get('postmaster_password', '').strip()
+    key_type = data.get('dkim_key_type', 'rsa').strip().lower()
+    key_bits = data.get('dkim_key_bits', 2048)
 
     if not domain:
         return jsonify({'error': 'domain is required'}), 400
@@ -150,6 +154,10 @@ def add_domain():
         return jsonify({'error': f'invalid domain: {domain}'}), 400
     if not password:
         return jsonify({'error': 'postmaster_password is required'}), 400
+    if key_type not in ('rsa', 'ed25519'):
+        return jsonify({'error': 'dkim_key_type must be rsa or ed25519'}), 400
+    if key_type == 'rsa' and key_bits not in (1024, 2048, 4096):
+        return jsonify({'error': 'dkim_key_bits must be 1024, 2048, or 4096'}), 400
     if domain in _domains():
         return jsonify({'error': f'{domain} already exists'}), 409
 
@@ -168,7 +176,7 @@ def add_domain():
         pass
 
     # 3. Generate DKIM key (dknewkey checks rcpthosts — must come after vadddomain)
-    dkim_rec, dkim_err = _dkim_setup(domain)
+    dkim_rec, dkim_err = _dkim_setup(domain, key_type=key_type, key_bits=key_bits)
 
     # 4. Rebuild users/assign so qmail routes the new domain correctly
     err2 = _rebuild_users()
