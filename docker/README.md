@@ -143,23 +143,37 @@ curl -s -X POST http://localhost:8080/domains/example.com/users \
 
 ## vpopmail auth backend
 
-vpopmail is compiled with a single auth backend selected at build time.
-The compose file defaults to **MySQL** (MariaDB). The Dockerfile accepts any backend:
+vpopmail is compiled with a single auth backend selected at build time via `--build-arg VPOPMAIL_AUTH=<backend>`.
 
-| Backend | Build arg | Extra runtime dependency |
-|---|---|---|
-| `mysql` *(default)* | `VPOPMAIL_AUTH=mysql` | MariaDB / MySQL server |
-| `cdb` | `VPOPMAIL_AUTH=cdb` | *(none)* |
-| `pgsql` | `VPOPMAIL_AUTH=pgsql` | PostgreSQL server |
-| `ldap` | `VPOPMAIL_AUTH=ldap` | LDAP server |
-| `passwd` | `VPOPMAIL_AUTH=passwd` | *(none)* |
+**MySQL (MariaDB) is the default and recommended backend** — it works out of the
+box with no extra configuration. PostgreSQL and LDAP are also fully supported for
+both vpopmail and Dovecot (which has native `pgsql` and `ldap` auth drivers), but
+require matching changes to the Dovecot config (`dovecot-sql.conf.ext` for pgsql,
+`dovecot-ldap.conf.ext` for LDAP). CDB is not recommended in a containerised setup.
 
-All client dev libraries are installed in the builder stage. To switch backends,
-rebuild with a different arg (and remove the `mariadb` service if not using MySQL):
+qmailadmin, vqadmin, and chkuser go through vpopmail's C API and work with any
+compiled backend. The **qmail-spp greylisting plugin** has its own MySQL connection
+and is always MySQL-only, but greylisting is not lost on other backends — both
+**jgreylist** (file-based, built in) and **rspamd's greylisting module** work
+independently of the vpopmail backend.
+
+| Backend | Build arg | Dovecot auth | qmail-spp greylisting | jgreylist / rspamd | qmailadmin |
+|---|---|---|---|---|---|
+| `mysql` *(default)* | `VPOPMAIL_AUTH=mysql` | ✓ out of the box | ✓ | ✓ | ✓ |
+| `pgsql` | `VPOPMAIL_AUTH=pgsql` | ✓ needs pgsql config | ✗ plugin MySQL-only | ✓ | ✓ |
+| `ldap` | `VPOPMAIL_AUTH=ldap` | ✓ needs LDAP config | ✗ plugin MySQL-only | ✓ | ✓ |
+| `cdb` | `VPOPMAIL_AUTH=cdb` | ✗ no CDB driver | ✗ plugin MySQL-only | ✓ | ✓ |
+| `passwd` | `VPOPMAIL_AUTH=passwd` | ✗ | ✗ plugin MySQL-only | ✓ | ✓ |
+
+> **`cdb` note:** Dovecot has no native CDB driver — you would need to fall back
+> to `vchkpw` as a checkpassword passdb, which loses container separation. CDB
+> also has no concurrent-write safety across containers. Not recommended.
+
+To switch backends, rebuild with the appropriate arg:
 
 ```sh
 docker compose -f docker/docker-compose.yml build \
-    --build-arg VPOPMAIL_AUTH=cdb
+    --build-arg VPOPMAIL_AUTH=pgsql
 ```
 
 > **Debian note:** the MySQL backend requires `--enable-libdir` pointing at the
