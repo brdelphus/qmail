@@ -10,6 +10,91 @@ All triggers apply to the three SMTP listeners unless otherwise noted.
 
 ---
 
+## Trigger map
+
+How every qmail-smtpd feature is activated. Three mechanisms:
+- **control/** — file read by the run script at container start (volume-persisted, global)
+- **env** — variable exported by the run script (hardcoded or derived from a control file)
+- **tcp.cdb** — per-connection variable injected by tcpserver from the compiled access rules
+
+### All three ports (25 / 465 / 587)
+
+| Feature | Mechanism | trigger | What it does |
+|---------|-----------|---------|--------------|
+| Concurrency | control/ | `control/concurrencyincoming` | Max simultaneous SMTP connections (`tcpserver -c`) |
+| Memory limit | control/ | `control/softlimit` | `RLIMIT_AS` per smtpd child (`chpst -m`) |
+| Hostname | control/ | `control/me` | Server name in banner and `tcpserver -l` |
+| Dual-stack | control/ | `control/dualstack` | Binds `::` (IPv4+IPv6) when `1`, `0.0.0.0` otherwise |
+| Greet delay | control/ → env | `control/greetdelay` → `SMTPD_GREETDELAY` | Seconds to wait before the `220` banner (default 5) |
+| Pre-greet drop | env | `DROP_PRE_GREET=1` | Drops clients that send data before the banner |
+| SURBL | control/ → env | `control/surbl` → `SURBL` | Enable URL blocklist scanning during DATA (default 0) |
+| DKIM verify | control/ → env | `control/dkimverify` → `DKIMVERIFY` | Inbound DKIM verification flags (empty = off) |
+| DKIM sign queue | env | `QMAILQUEUE=qmail-dkim` | Routes all mail through qmail-dkim for signing/verify |
+| Skip DKIM for relays | env | `RELAYCLIENT_NODKIMVERIFY=1` | Authenticated relay clients skip DKIM re-verification |
+| Simscan AV/spam | env | `DKIMQUEUE=simscan` (when `SIMSCAN_ENABLE`) | After DKIM verify, pass to simscan for AV + spam |
+| SPP plugins | control/ → env | `control/smtpplugins` + `plugins/` dir → `ENABLE_SPP=1` | Enables qmail-spp plugin system (greylisting, SPF, etc.) |
+| User validation | env | `CHKUSER_START=ALWAYS` | Validates sender domain MX and recipient in vpopmail DB |
+| Auth from-match | env | `FORCEAUTHMAILFROM=1` | MAIL FROM must match the authenticated user |
+| Wrong rcpt limit | tcp.cdb | `CHKUSER_WRONGRCPTLIMIT="3"` (catch-all) | Disconnects after N invalid RCPT TOs |
+
+### Port 25 only (MX inbound)
+
+| Feature | Mechanism | Trigger | What it does |
+|---------|-----------|---------|--------------|
+| Relay permission | tcp.cdb | `RELAYCLIENT=""` for loopback + RELAY_NETS | Grants relay; skips simscan spam scan |
+| Greet delay bypass | tcp.cdb | `SMTPD_GREETDELAY="0"` for relay IPs | Trusted senders skip the greet delay |
+| jgreylist | control/ | `control/jgreylist=1` | Wraps smtpd with file-based triplet greylisting binary |
+| jgreylist dirs | env | `JGREYLIST_DIR`, `JGREYLIST_LOG_SMTP=1` | State directory and logging for jgreylist |
+| SPP greylisting | control/ → env | `control/greylisting` → `GREYLISTING=""` + `GLCONFIGFILE` | MySQL-backed triplet greylisting via SPP plugin |
+
+### Ports 465 + 587 only (submission)
+
+| Feature | Mechanism | Trigger | What it does |
+|---------|-----------|---------|--------------|
+| Auth required | env | `SMTPAUTH="!"` | Clients must authenticate before MAIL FROM |
+| Rate limiting | env | `RCPTCHECK=rcptcheck-overlimit`, `OVERLIMITDIR`, `LIMITSCONTROLFILE` | Rejects when auth user/IP exceeds `control/relaylimits` count |
+
+### Port 465 only (SMTPS)
+
+| Feature | Mechanism | Trigger | What it does |
+|---------|-----------|---------|--------------|
+| TLS certificate | control/ → env | `control/servercert.pem` → `CERTFILE`/`KEYFILE` | Certificate for sslserver's implicit TLS |
+| DH params | control/ → env | `control/dh4096.pem` → `DHFILE` | Diffie-Hellman params for TLS key exchange |
+| Disable STARTTLS | env | `DISABLETLS=1` | Stops smtpd advertising STARTTLS (already encrypted by sslserver) |
+| No TLS-for-auth gate | env | `FORCETLS=0` | Lets smtpd offer AUTH without its own TLS context |
+
+### Port 587 only (submission STARTTLS)
+
+| Feature | Mechanism | Trigger | What it does |
+|---------|-----------|---------|--------------|
+| Require STARTTLS | env | `FORCETLS=1` | Client must issue STARTTLS before AUTH is offered |
+
+### qmail-send only
+
+| Feature | Mechanism | Trigger | What it does |
+|---------|-----------|---------|--------------|
+| Local delivery | control/ | `control/defaultdelivery` | qmail-start delivery program (default: `lmtp-deliver`) |
+| DKIM signing | control/ | `control/filterargs` + `bin/spawn-filter` → `QMAILREMOTE=spawn-filter` | Signs outbound mail using keys in `control/domainkeys/` |
+
+---
+
+### Single-mechanism features (no override path)
+
+| Feature | Only mechanism | Gap |
+|---------|---------------|-----|
+| SURBL | control/ file | No per-IP tcp.cdb override |
+| DKIM verify | control/ file | No per-IP tcp.cdb override |
+| SPF behavior | control/ file (`control/spfbehavior`) | No per-IP tcp.cdb override |
+| Rate limiting | env (hardcoded paths) | No control/ file toggle; no per-IP off switch |
+| jgreylist | control/ file | No per-IP override (plugin skips RELAYCLIENT internally) |
+| SPP greylisting | control/ file (presence check) | No per-IP on/off; plugin skips RELAYCLIENT internally |
+| DKIM signing (send) | control/ files | No env var runtime toggle |
+| Wrong rcpt limit | tcp.cdb only | Default "3" baked into entrypoint; no `control/chkuser_wrongrcptlimit` |
+
+`SMTPD_GREETDELAY` is the only feature with **both** a global control file and a per-IP tcp.cdb override — intentional, so trusted senders bypass the delay.
+
+---
+
 ## Connection-level triggers
 
 ### Greetdelay + DROP_PRE_GREET

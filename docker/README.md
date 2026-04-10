@@ -365,7 +365,7 @@ current; a daily job (09:02) purges the URI lookup cache in `control/cache/`.
 
 ## Runit services
 
-The **qmail** container runs six supervised services under `runsvdir`:
+The **qmail** container runs eight supervised services under `runsvdir`:
 
 | Service | Port | Notes |
 |---|---|---|
@@ -375,6 +375,10 @@ The **qmail** container runs six supervised services under `runsvdir`:
 | `qmail-smtps` | 465 | Auth required, implicit TLS via `sslserver`, rate limiting, simscan → rspamd |
 | `lighttpd` | 80 | qmailadmin + vqadmin CGI |
 | `vusaged` | — | vpopmail quota usage daemon |
+| `cron` | — | Debian cron (`cron -f`); crontab written by entrypoint on every start |
+| `qmailapi` | 8080 | Flask REST API for domain/user management (internal; requires `QMAIL_API_KEY`) |
+
+For a full breakdown of every trigger, control file, and env var across all three SMTP ports see [`smtp.md`](smtp.md).
 
 IMAP/POP3/Sieve run in the **dovecot** container (see Dovecot section below).
 

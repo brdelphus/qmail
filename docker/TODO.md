@@ -365,6 +365,10 @@ oletools     — Office macro scanning via olefy/olevba           port:  11343 (
 - [x] **Bayes classifier runs on every scan** — `bayes_classify.lua` executes; currently inactive because ham class needs ≥ 200 samples (rspamd default minimum); `Currently: 1` confirms count is incrementing ✓
 - [x] **Per-user Bayes** — `per_user = true` set in `classifier-bayes.conf`; per-user token keys confirmed in Redis: `RStestuser@example.com_<hash>` ✓
 
+### qmail-smtpd trigger reference
+
+- [x] **`smtp.md` trigger map** — complete table of every feature across ports 25/465/587: mechanism (control file, env var, tcp.cdb), which ports it applies to, and what it does. Includes single-mechanism gap analysis.
+
 ### qmail-smtpd triggers
 
 - [x] **Greetdelay / DROP_PRE_GREET** — immediate EHLO → `554 SMTP protocol violation` ✓
