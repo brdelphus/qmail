@@ -53,18 +53,28 @@ fehQlibs → ucspi-tcp6 → ucspi-ssl → libsrs2 → netqmail → vpopmail → 
 
 ## Quick start
 
-### 1. Configure credentials
+### 1. Configure
 
-Copy the example env file and set at minimum the MariaDB passwords and your
-server's FQDN:
+Copy the example env file and edit it:
 
 ```sh
 cp docker/.env.example docker/.env
 $EDITOR docker/.env
 ```
 
-The only truly required change is `QMAIL_ME`. You should also set strong
-passwords for `MYSQL_PASS`, `MYSQL_ROOT_PASS`, and `MYSQL_PASS`.
+The table below lists everything you should set before the first run.
+MariaDB credentials are **baked into the database volume** on first start —
+changing them later requires dropping the volume and re-initialising.
+
+| Variable | Required | Default | Notes |
+|---|---|---|---|
+| `QMAIL_ME` | **yes** | — | FQDN of this server (`mail.example.com`) |
+| `MYSQL_ROOT_PASS` | **yes** | `changeme_root` | MariaDB root password — change before first run |
+| `MYSQL_PASS` | **yes** | `changeme` | vpopmail DB password — change before first run |
+| `QMAIL_DOMAIN` | no | derived from `QMAIL_ME` | Primary virtual domain; defaults to everything after the first dot |
+| `RSPAMD_PASSWORD` | recommended | `changeme_rspamd` | rspamd web UI password (`:11334`) |
+| `VQADMIN_PASS` | no | auto-generated | vqadmin HTTP basic auth — printed to logs on first run if unset |
+| `QMAIL_API_KEY` | no | — | Enables the domain management REST API (port 8080, internal); leave unset to disable |
 
 ### 2. Build and start
 
@@ -80,33 +90,54 @@ docker compose -f docker/docker-compose.yml up -d
 docker compose -f docker/docker-compose.yml logs -f
 ```
 
-On first run the entrypoint will:
-- Write all qmail control files from env vars
-- Write `vpopmail/etc/vpopmail.mysql` for MariaDB auth
-- Generate a self-signed TLS cert for `QMAIL_ME` (replace with Let's Encrypt — see TLS section)
-- Generate DKIM keys for `QMAIL_DOMAIN`
-- Create the primary vpopmail domain
-- Set up tcprules CDB files
-- Write `simscan/simcontrol` from `SIMSCAN_*` env vars and compile with `simscanmk`
+On **first run** the entrypoint:
+- Writes all qmail control files from env vars
+- Writes `vpopmail/etc/vpopmail.mysql` with the MariaDB connection string
+- Generates a self-signed TLS cert for `QMAIL_ME` (replace with Let's Encrypt — see TLS section)
+- Generates DKIM keys for `QMAIL_DOMAIN`
+- Creates the primary vpopmail domain and postmaster account
+- Compiles tcprules CDB files for all three SMTP ports
+- Writes and compiles `simscan/simcontrol` from `SIMSCAN_*` env vars
 
 On **every** startup the entrypoint also:
-- Rebuilds `/var/qmail/users/assign` from the vpopmail domain directories and recompiles it with `qmail-newu` — `/var/qmail/users` is not persisted in the volume so this is always required
+- Rebuilds `/var/qmail/users/assign` from the vpopmail domain directories and recompiles with `qmail-newu`
+- Re-writes `/etc/cron.d/qmail` (overlimit reset; SURBL jobs when `SURBL_LAYER=qmail`)
+- Re-applies feature layer toggles (`SPF_LAYER`, `DKIM_VERIFY_LAYER`, `DNSBL_LAYER`, `SURBL_LAYER`)
 
 ### 3. Add the first mail user
+
+Via CLI inside the container:
 
 ```sh
 docker compose -f docker/docker-compose.yml exec qmail \
     /home/vpopmail/bin/vadduser postmaster@example.com yourpassword
 ```
 
-### DNS records needed
+Or via the REST API (requires `QMAIL_API_KEY` to be set):
+
+```sh
+# Add a domain (vadddomain + DKIM + LMTP setup in one call)
+curl -s -X POST http://localhost:8080/domains \
+  -H "Authorization: Bearer $QMAIL_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"domain":"example.com","postmaster_password":"yourpassword"}' | jq
+
+# Add a user
+curl -s -X POST http://localhost:8080/domains/example.com/users \
+  -H "Authorization: Bearer $QMAIL_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"user":"alice","password":"yourpassword"}' | jq
+```
+
+### 4. DNS records
 
 | Type | Name | Value |
 |---|---|---|
 | A / AAAA | `mail.example.com` | server IP |
 | MX | `example.com` | `mail.example.com` (priority 10) |
-| TXT | `_domainkey.example.com` | contents of `/srv/mail/qmail/control/domainkeys/example.com.dns.txt` |
 | TXT | `example.com` | `v=spf1 mx ~all` |
+| TXT | `_dmarc.example.com` | `v=DMARC1; p=none; rua=mailto:dmarc@example.com` |
+| TXT | `default._domainkey.example.com` | contents of `/srv/mail/qmail/control/domainkeys/example.com.dns.txt` |
 
 ---
 
