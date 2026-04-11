@@ -143,54 +143,72 @@ curl -s -X POST http://localhost:8080/domains/example.com/users \
 
 ## vpopmail auth backend
 
-vpopmail is compiled with a single auth backend selected at build time via `--build-arg VPOPMAIL_AUTH=<backend>`.
+Switching backends requires two changes — one at build time, one at runtime:
 
-**MySQL (MariaDB) is the default and recommended backend** — it works out of the
-box with no extra configuration. PostgreSQL and LDAP are also fully supported for
-both vpopmail and Dovecot (which has native `pgsql` and `ldap` auth drivers), but
-require matching changes to the Dovecot config (`dovecot-sql.conf.ext` for pgsql,
-`dovecot-ldap.conf.ext` for LDAP). CDB is not recommended in a containerised setup.
+1. **Build time** — vpopmail is compiled with a single backend: `--build-arg VPOPMAIL_AUTH=<backend>`
+2. **Runtime** — Dovecot must use a matching driver: `DOVECOT_AUTH_DRIVER=<mysql|pgsql|ldap>`
+
+No manual config file editing is needed. The Dovecot entrypoint writes the
+correct auth config from env vars on every startup.
+
+**MySQL (MariaDB) is the default** — both steps are pre-configured and nothing
+extra is needed. PostgreSQL and LDAP are fully supported; rebuild the qmail image
+with the matching `VPOPMAIL_AUTH` arg, set `DOVECOT_AUTH_DRIVER` and the
+corresponding credential vars (`PGSQL_*` or `LDAP_*`) in `.env`. The entrypoints
+of both containers write all connection files from env vars — no manual config
+file editing needed. CDB is not recommended in a containerised setup.
 
 qmailadmin, vqadmin, and chkuser go through vpopmail's C API and work with any
 compiled backend. The **qmail-spp greylisting plugin** has its own MySQL connection
-and is always MySQL-only, but greylisting is not lost on other backends — both
-**jgreylist** (file-based, built in) and **rspamd's greylisting module** work
-independently of the vpopmail backend.
+and only works with MySQL — on other backends, use **jgreylist** (file-based,
+always available) or **rspamd's greylisting module** instead.
 
-| Backend | Build arg | Dovecot auth | qmail-spp greylisting | jgreylist / rspamd | qmailadmin |
+| Backend | `VPOPMAIL_AUTH` | `DOVECOT_AUTH_DRIVER` | qmail-spp greylisting | jgreylist / rspamd | qmailadmin |
 |---|---|---|---|---|---|
-| `mysql` *(default)* | `VPOPMAIL_AUTH=mysql` | ✓ out of the box | ✓ | ✓ | ✓ |
-| `pgsql` | `VPOPMAIL_AUTH=pgsql` | ✓ set `DOVECOT_AUTH_DRIVER=pgsql` + `PGSQL_*` vars | ✗ plugin MySQL-only | ✓ | ✓ |
-| `ldap` | `VPOPMAIL_AUTH=ldap` | ✓ set `DOVECOT_AUTH_DRIVER=ldap` + `LDAP_*` vars | ✗ plugin MySQL-only | ✓ | ✓ |
-| `cdb` | `VPOPMAIL_AUTH=cdb` | ✗ no CDB driver | ✗ plugin MySQL-only | ✓ | ✓ |
-| `passwd` | `VPOPMAIL_AUTH=passwd` | ✗ | ✗ plugin MySQL-only | ✓ | ✓ |
+| MySQL *(default)* | `mysql` | `mysql` (default) | ✓ | ✓ | ✓ |
+| PostgreSQL | `pgsql` | `pgsql` + `PGSQL_*` vars | ✗ use jgreylist/rspamd | ✓ | ✓ |
+| LDAP | `ldap` | `ldap` + `LDAP_*` vars | ✗ use jgreylist/rspamd | ✓ | ✓ |
+| CDB | `cdb` | ✗ no CDB driver in Dovecot | ✗ | ✓ | ✓ |
 
-> **`cdb` note:** Dovecot has no native CDB driver — you would need to fall back
-> to `vchkpw` as a checkpassword passdb, which loses container separation. CDB
-> also has no concurrent-write safety across containers. Not recommended.
+> **`cdb` note:** Dovecot has no native CDB driver — you would need `vchkpw` as
+> a checkpassword passdb, which loses container separation. CDB also has no
+> concurrent-write safety across containers. Not recommended.
 
-To switch backends, rebuild with the appropriate arg:
+To switch to PostgreSQL, rebuild the qmail image and set the runtime var:
 
 ```sh
+# 1. Rebuild qmail with pgsql vpopmail backend
 docker compose -f docker/docker-compose.yml build \
     --build-arg VPOPMAIL_AUTH=pgsql
+
+# 2. In .env, set the Dovecot driver and credentials
+DOVECOT_AUTH_DRIVER=pgsql
+PGSQL_HOST=postgres
+PGSQL_DB=vpopmail
+PGSQL_USER=vpopmail
+PGSQL_PASS=yourpassword
 ```
 
 > **Debian note:** the MySQL backend requires `--enable-libdir` pointing at the
 > multiarch lib path (`/usr/lib/x86_64-linux-gnu` on amd64). The Dockerfile
 > derives this automatically via `dpkg-architecture -qDEB_HOST_MULTIARCH`.
 
-### vpopmail.mysql
+### vpopmail connection files
 
-When `MYSQL_HOST` is set, the entrypoint writes
-`/home/vpopmail/etc/vpopmail.mysql` on every startup:
+The qmail entrypoint writes the vpopmail backend connection file on every startup
+from env vars so credential changes take effect without rebuilding:
 
-```
-host|port|user|password|database
-```
+| Backend | File | Env vars |
+|---|---|---|
+| MySQL | `/home/vpopmail/etc/vpopmail.mysql` | `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DB`, `MYSQL_USER`, `MYSQL_PASS` |
+| PostgreSQL | `/home/vpopmail/etc/vpopmail.pgsql` | `PGSQL_HOST`, `PGSQL_PORT`, `PGSQL_DB`, `PGSQL_USER`, `PGSQL_PASS` |
 
-This file is re-written on every container start so credential changes take
-effect without rebuilding.
+Both files use the same format: `host|port|user|password|database`
+
+LDAP connection settings are compiled into the binary via vpopmail's configure
+(`--enable-ldap-host` etc.) or read from `/home/vpopmail/etc/vpopmail.ldap`
+depending on the vpopmail version — consult the vpopmail LDAP documentation for
+the exact config format.
 
 ---
 

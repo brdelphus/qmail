@@ -120,21 +120,34 @@ RUN wget -q https://www.sagredo.eu/files/qmail/tar/netqmail-1.06.tar.gz \
 # Auth backend is selected via VPOPMAIL_AUTH build arg (default: cdb).
 # Rebuild with --build-arg VPOPMAIL_AUTH=pgsql|ldap|mysql|passwd as needed.
 ARG VPOPMAIL_VERSION=5.6.13
-RUN wget -q https://github.com/sagredo-dev/vpopmail/archive/refs/tags/v${VPOPMAIL_VERSION}.tar.gz \
+RUN ARCH=$(dpkg-architecture -qDEB_HOST_MULTIARCH) \
+ && wget -q https://github.com/sagredo-dev/vpopmail/archive/refs/tags/v${VPOPMAIL_VERSION}.tar.gz \
  && tar xzf v${VPOPMAIL_VERSION}.tar.gz \
  && cd vpopmail-${VPOPMAIL_VERSION} \
+ && if [ "${VPOPMAIL_AUTH}" = "mysql" ]; then \
+        EXTRA_FLAGS="--enable-incdir=/usr/include/mysql \
+                     --enable-libdir=/usr/lib/${ARCH} \
+                     --enable-mysql-limits \
+                     --enable-valias \
+                     --enable-sql-aliasdomains"; \
+    elif [ "${VPOPMAIL_AUTH}" = "pgsql" ]; then \
+        EXTRA_FLAGS="--enable-incdir=/usr/include/postgresql \
+                     --enable-libdir=/usr/lib/${ARCH} \
+                     --enable-valias \
+                     --enable-sql-aliasdomains"; \
+    elif [ "${VPOPMAIL_AUTH}" = "ldap" ]; then \
+        EXTRA_FLAGS="--enable-libdir=/usr/lib/${ARCH}"; \
+    else \
+        EXTRA_FLAGS=""; \
+    fi \
  && ./configure \
         --enable-vpopuser=vpopmail \
         --enable-vpopgroup=vchkpw \
         --enable-auth-module="${VPOPMAIL_AUTH}" \
-        --enable-incdir=/usr/include/mysql \
-        --enable-libdir=/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH) \
         --enable-file-locking=flock \
         --enable-auth-logging \
         --enable-vusaged \
-        --enable-mysql-limits \
-        --enable-valias \
-        --enable-sql-aliasdomains \
+        ${EXTRA_FLAGS} \
  && make -j"$(nproc)" \
  && make install-strip
 

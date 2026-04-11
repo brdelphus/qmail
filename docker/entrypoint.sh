@@ -39,9 +39,8 @@ link_to_volume /var/qmail/simscan    /srv/mail/qmail/simscan
 link_to_volume /home/vpopmail/domains /srv/mail/vpopmail/domains
 link_to_volume /home/vpopmail/etc    /srv/mail/vpopmail/etc
 
-# ── MySQL backend setup (runs every startup) ──────────────────────────────────
-# Writes /home/vpopmail/etc/vpopmail.mysql from env vars when MYSQL_HOST is set.
-# Format: host|port|database|user|password  (read by vpopmail's MySQL auth module)
+# ── vpopmail backend connection file (runs every startup) ─────────────────────
+# Writes the connection file for the compiled-in vpopmail auth backend.
 # Re-written on every startup so credential changes take effect without rebuilding.
 if [ -n "$MYSQL_HOST" ]; then
     if [ -z "$MYSQL_USER" ] || [ -z "$MYSQL_PASS" ] || [ -z "$MYSQL_DB" ]; then
@@ -49,12 +48,28 @@ if [ -n "$MYSQL_HOST" ]; then
         exit 1
     fi
     MYSQL_PORT=${MYSQL_PORT:-3306}
+    # Format: host|port|user|password|database  (read by vpopmail MySQL auth module)
     printf '%s|%s|%s|%s|%s\n' \
         "$MYSQL_HOST" "$MYSQL_PORT" "$MYSQL_USER" "$MYSQL_PASS" "$MYSQL_DB" \
         > /home/vpopmail/etc/vpopmail.mysql
     chmod 600 /home/vpopmail/etc/vpopmail.mysql
     chown vpopmail:vchkpw /home/vpopmail/etc/vpopmail.mysql
     echo "qmail: vpopmail MySQL backend configured ($MYSQL_USER@$MYSQL_HOST:$MYSQL_PORT/$MYSQL_DB)"
+fi
+
+if [ -n "$PGSQL_HOST" ]; then
+    if [ -z "$PGSQL_USER" ] || [ -z "$PGSQL_PASS" ] || [ -z "$PGSQL_DB" ]; then
+        echo "ERROR: PGSQL_HOST is set but PGSQL_USER, PGSQL_PASS, or PGSQL_DB is missing" >&2
+        exit 1
+    fi
+    PGSQL_PORT=${PGSQL_PORT:-5432}
+    # Format: host|port|user|password|database  (read by vpopmail pgsql auth module)
+    printf '%s|%s|%s|%s|%s\n' \
+        "$PGSQL_HOST" "$PGSQL_PORT" "$PGSQL_USER" "$PGSQL_PASS" "$PGSQL_DB" \
+        > /home/vpopmail/etc/vpopmail.pgsql
+    chmod 600 /home/vpopmail/etc/vpopmail.pgsql
+    chown vpopmail:vchkpw /home/vpopmail/etc/vpopmail.pgsql
+    echo "qmail: vpopmail PostgreSQL backend configured ($PGSQL_USER@$PGSQL_HOST:$PGSQL_PORT/$PGSQL_DB)"
 fi
 
 # ── qmail-spp greylisting plugin setup (runs every startup) ──────────────────
