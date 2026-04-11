@@ -298,16 +298,54 @@ automatically. See `.env.example` for a fully commented reference.
 | `QMAIL_ME` | **required** | FQDN of this server (`mail.example.com`) |
 | `QMAIL_DOMAIN` | derived from `QMAIL_ME` | Primary virtual domain, created in vpopmail on first run |
 
-### MariaDB
+### Dovecot auth backend
 
 | Variable | Default | Description |
 |---|---|---|
-| `MYSQL_HOST` | `mariadb` | MariaDB hostname (service name — do not change) |
+| `DOVECOT_AUTH_DRIVER` | `mysql` | Auth driver for Dovecot: `mysql`, `pgsql`, or `ldap` — must match `VPOPMAIL_AUTH` build arg |
+
+### MariaDB
+
+Used when `DOVECOT_AUTH_DRIVER=mysql` (default).
+
+| Variable | Default | Description |
+|---|---|---|
+| `MYSQL_HOST` | `mariadb` | MariaDB hostname |
 | `MYSQL_PORT` | `3306` | MariaDB port |
 | `MYSQL_DB` | `vpopmail` | vpopmail database name |
 | `MYSQL_USER` | `vpopmail` | vpopmail database user |
 | `MYSQL_PASS` | `changeme` | vpopmail database password |
-| `MYSQL_ROOT_PASS` | `changeme_root` | MariaDB root password |
+| `MYSQL_ROOT_PASS` | `changeme_root` | MariaDB root password (not used by Dovecot) |
+
+### PostgreSQL
+
+Used when `DOVECOT_AUTH_DRIVER=pgsql`. The vpopmail schema must already exist in PostgreSQL.
+
+| Variable | Default | Description |
+|---|---|---|
+| `PGSQL_HOST` | — | PostgreSQL hostname |
+| `PGSQL_PORT` | `5432` | PostgreSQL port |
+| `PGSQL_DB` | `vpopmail` | vpopmail database name |
+| `PGSQL_USER` | — | PostgreSQL user |
+| `PGSQL_PASS` | — | PostgreSQL password |
+
+### LDAP
+
+Used when `DOVECOT_AUTH_DRIVER=ldap`. Assumes the standard vpopmail LDAP schema
+(`objectClass=qmailUser`, `mail=user@domain`). Override the filter/attr vars if
+your schema differs.
+
+| Variable | Default | Description |
+|---|---|---|
+| `LDAP_HOST` | — | LDAP server hostname |
+| `LDAP_PORT` | `389` | LDAP port |
+| `LDAP_BASE` | — | Base DN for user searches |
+| `LDAP_BIND_DN` | — | Bind DN for Dovecot (leave empty for anonymous bind) |
+| `LDAP_BIND_PW` | — | Bind password |
+| `LDAP_TLS` | `no` | Enable STARTTLS (`yes`/`no`) |
+| `LDAP_USER_FILTER` | `(&(objectClass=qmailUser)(mail=%u))` | Search filter — `%u` expands to `user@domain` |
+| `LDAP_PASS_ATTRS` | `userPassword=password` | Password attribute mapping |
+| `LDAP_USER_ATTRS` | `homeDirectory=home,=uid=89,=gid=2109` | User attribute mapping |
 
 ### Queue / concurrency
 
