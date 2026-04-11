@@ -52,6 +52,10 @@ RUN groupadd -g 2107 qmail \
 
 WORKDIR /build
 
+# Pre-downloaded external sources (non-GitHub, non-sagredo.eu).
+# Avoids build-time dependency on third-party personal sites.
+COPY docker/external-files/ /build/external-files/
+
 # ── Step 1: libsrs2 ──────────────────────────────────────────────────────────
 # conf-ld already carries -L/usr/local/lib, so installing here is enough.
 RUN wget -q https://www.sagredo.eu/files/qmail/tar/libsrs2-1.0.18.tar.gz \
@@ -66,7 +70,7 @@ RUN wget -q https://www.sagredo.eu/files/qmail/tar/libsrs2-1.0.18.tar.gz \
 # stralloc.h, etc.) and support libraries. Symlinked to /usr/local/qlibs so
 # the ucspi-tcp6 build system finds it automatically.
 ARG FEHQLIBS_VERSION=31
-RUN wget -q https://www.fehcom.de/ipnet/fehQlibs/fehQlibs-${FEHQLIBS_VERSION}.tgz \
+RUN cp /build/external-files/fehQlibs-${FEHQLIBS_VERSION}.tgz . \
  && tar xzf fehQlibs-${FEHQLIBS_VERSION}.tgz -C /usr/local \
  && make -C /usr/local/fehQlibs-${FEHQLIBS_VERSION}/src \
  && ln -s /usr/local/fehQlibs-${FEHQLIBS_VERSION} /usr/local/qlibs
@@ -77,7 +81,7 @@ RUN wget -q https://www.fehcom.de/ipnet/fehQlibs/fehQlibs-${FEHQLIBS_VERSION}.tg
 # Requires mandoc (since v1.13.05) and fehQlibs. Installs tcpserver/tcpclient
 # to /usr/local/bin — takes precedence over Debian's ucspi-tcp at runtime.
 ARG TCP6_VERSION=1.13.07
-RUN wget -q https://www.fehcom.de/ipnet/ucspi-tcp6/ucspi-tcp6-${TCP6_VERSION}.tgz \
+RUN cp /build/external-files/ucspi-tcp6-${TCP6_VERSION}.tgz . \
  && tar xzf ucspi-tcp6-${TCP6_VERSION}.tgz \
  && cd net/ucspi-tcp6/ucspi-tcp6-${TCP6_VERSION} \
  && package/install \
@@ -93,7 +97,7 @@ RUN wget -q https://www.fehcom.de/ipnet/ucspi-tcp6/ucspi-tcp6-${TCP6_VERSION}.tg
 #  • sed patches print-cc.sh to add -fcommon (gcc 10+ changed the default to
 #    -fno-common, causing multiple-definition errors on global strnum).
 #  • "- sslperl" suppresses the sslperl target which requires libperl-dev.
-RUN wget -q https://www.fehcom.de/ipnet/ucspi-ssl/ucspi-ssl-0.99e.tgz \
+RUN cp /build/external-files/ucspi-ssl-0.99e.tgz . \
  && tar xzf ucspi-ssl-0.99e.tgz \
  && cd host/superscript.com/net/ucspi-ssl-0.99e \
  && sed -i 's/^ccbase="cc /ccbase="cc -fcommon /' src/print-cc.sh \
@@ -202,7 +206,7 @@ RUN cp /usr/src/qmail/scripts/rcptcheck-overlimit /var/qmail/bin/rcptcheck-overl
 # control/mysql.cnf and control/greylisting from those).
 WORKDIR /build
 RUN mkdir -p /var/qmail/plugins \
- && wget -q https://manuel.mausz.at/coding/qmail-spp/greylisting/greylisting-0.5.tgz \
+ && cp /build/external-files/greylisting-0.5.tgz . \
  && wget -q https://notes.sagredo.eu/files/qmail/patches/greylisting_DEFAULT_SOURCE.patch \
  && tar xzf greylisting-0.5.tgz \
  && cd greylisting-0.5 \
@@ -220,7 +224,7 @@ RUN mkdir -p /var/qmail/plugins \
 # ── Step 4d: ripMIME ──────────────────────────────────────────────────────────
 # MIME attachment extractor required by simscan for --enable-attach scanning.
 WORKDIR /build
-RUN wget -q https://www.pldaniels.com/ripmime/ripmime-1.4.0.6.tar.gz \
+RUN cp /build/external-files/ripmime-1.4.0.6.tar.gz . \
  && tar xzf ripmime-1.4.0.6.tar.gz \
  && cd ripmime-1.4.0.6 \
  && make \
@@ -266,7 +270,7 @@ RUN wget -q https://github.com/sagredo-dev/simscan/archive/refs/tags/v${SIMSCAN_
 # High-speed mailing list manager for qmail.
 # Requires lang/default symlink before building.
 WORKDIR /build
-RUN wget -q https://untroubled.org/ezmlm/archive/7.2.2/ezmlm-idx-7.2.2.tar.gz \
+RUN cp /build/external-files/ezmlm-idx-7.2.2.tar.gz . \
  && tar xzf ezmlm-idx-7.2.2.tar.gz \
  && cd ezmlm-idx-7.2.2 \
  && ln -s en_US lang/default \
