@@ -47,20 +47,36 @@ fi
 DNSBL_LAYER=${DNSBL_LAYER:-rspamd}
 if [ "$DNSBL_LAYER" = "qmail" ]; then
     printf 'enabled = false;\n' > /etc/rspamd/override.d/rbl.conf
-    echo "rspamd: RBL module disabled (layer=qmail)"
+    echo "rspamd: RBL module disabled (DNSBL_LAYER=qmail)"
 else
     rm -f /etc/rspamd/override.d/rbl.conf
-    echo "rspamd: RBL module enabled (layer=rspamd)"
+    echo "rspamd: RBL module enabled (DNSBL_LAYER=rspamd)"
 fi
 
-# SURBL/URI blocklists
+# SURBL/URI blocklists — live in the rbl module as SURBL_MULTI / SURBL_HASHBL rules.
+# When SURBL_LAYER=qmail, zero out every symbol in the surbl group so they don't
+# contribute to the message score. IP-based RBL checks (Spamhaus etc.) remain active.
+# Writing a full group override ensures no residual weight leaks through.
 SURBL_LAYER=${SURBL_LAYER:-rspamd}
+rm -f /etc/rspamd/override.d/surbl.conf  # legacy noop file — no longer used
 if [ "$SURBL_LAYER" = "qmail" ]; then
-    printf 'enabled = false;\n' > /etc/rspamd/override.d/surbl.conf
-    echo "rspamd: SURBL module disabled (layer=qmail)"
+    cat > /etc/rspamd/override.d/surbl_group.conf << 'EOF'
+description = "URL DNS lists (scoring disabled — handled by qmail SURBL layer)";
+max_score = 0.001;
+symbols = {
+    "SURBL_BLOCKED"   { weight = 0.0; description = "SURBL: query blocked"; one_shot = true; groups = ["surblorg","blocked"]; }
+    "PH_SURBL_MULTI"  { weight = 0.0; description = "SURBL phishing";       one_shot = true; groups = ["surblorg","phishing"]; }
+    "MW_SURBL_MULTI"  { weight = 0.0; description = "SURBL malware";        one_shot = true; groups = ["surblorg"]; }
+    "ABUSE_SURBL"     { weight = 0.0; description = "SURBL abused";         one_shot = true; groups = ["surblorg"]; }
+    "CRACKED_SURBL"   { weight = 0.0; description = "SURBL cracked";        one_shot = true; groups = ["surblorg"]; }
+    "CT_SURBL"        { weight = 0.0; description = "SURBL clicktracker";   one_shot = true; groups = ["surblorg"]; }
+    "DM_SURBL"        { weight = 0.0; description = "SURBL disposable MX";  one_shot = true; groups = ["surblorg"]; }
+}
+EOF
+    echo "rspamd: SURBL group symbols zeroed (SURBL_LAYER=qmail)"
 else
-    rm -f /etc/rspamd/override.d/surbl.conf
-    echo "rspamd: SURBL module enabled (layer=rspamd)"
+    rm -f /etc/rspamd/override.d/surbl_group.conf
+    echo "rspamd: SURBL scoring enabled (SURBL_LAYER=rspamd)"
 fi
 
 exec "$@"

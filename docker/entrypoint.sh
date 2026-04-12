@@ -505,10 +505,10 @@ if [ "$SURBL_LAYER" = "qmail" ]; then
     mkdir -p "$CONTROL/cache"
     if [ ! -s "$CONTROL/level2-tlds" ] || [ ! -s "$CONTROL/level3-tlds" ]; then
         echo "qmail: SURBL layer=qmail — downloading TLD files from surbl.org..."
-        wget -q -O "$CONTROL/level3-tlds" https://www.surbl.org/static/three-level-tlds 2>/dev/null \
+        curl -fsSL -o "$CONTROL/level3-tlds" https://www.surbl.org/static/three-level-tlds 2>/dev/null \
             && echo "qmail: SURBL level3-tlds downloaded" \
             || echo "qmail: WARNING: failed to download level3-tlds (SURBL may not block URI spam)" >&2
-        wget -q -O "$CONTROL/level2-tlds" https://www.surbl.org/static/two-level-tlds 2>/dev/null \
+        curl -fsSL -o "$CONTROL/level2-tlds" https://www.surbl.org/static/two-level-tlds 2>/dev/null \
             && echo "qmail: SURBL level2-tlds downloaded" \
             || echo "qmail: WARNING: failed to download level2-tlds (SURBL may not block URI spam)" >&2
     fi

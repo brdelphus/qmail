@@ -31,8 +31,13 @@ export SMTPD_GREETDELAY=$(cat $QMAILDIR/control/greetdelay 2>/dev/null || echo 5
 export DROP_PRE_GREET=1
 
 # SURBL and DKIM — same as port 25
-export SURBL=$(cat $QMAILDIR/control/surbl 2>/dev/null || echo 0)
-export QMAILQUEUE=$QMAILDIR/bin/qmail-dkim
+SURBL_VAL=$(cat $QMAILDIR/control/surbl 2>/dev/null || echo 0)
+if [ "$SURBL_VAL" = "1" ]; then
+    export QMAILQUEUE=$QMAILDIR/bin/surblqueue
+    export SURBLQUEUE=$QMAILDIR/bin/qmail-dkim
+else
+    export QMAILQUEUE=$QMAILDIR/bin/qmail-dkim
+fi
 export DKIMVERIFY=$(cat $QMAILDIR/control/dkimverify 2>/dev/null || true)
 export RELAYCLIENT_NODKIMVERIFY=1
 if [ "${SIMSCAN_ENABLE:-true}" = "true" ]; then
