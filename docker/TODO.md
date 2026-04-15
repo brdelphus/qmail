@@ -319,6 +319,9 @@ oletools     — Office macro scanning via olefy/olevba           port:  11343 (
 | ~~A~~ | ~~**rspamd-spamc CRLF** — awk `/^$/` doesn't match `\r\n` blank line from qmail DATA; X-Spam headers never inserted; simscan always reads score 0.00 → CLEAN~~ | **Fixed**: root cause was `rspamc` failing to mmap `libicudata.so.72` under `chpst -m 64MB` RLIMIT_AS; switched to `curl` + `/checkv2` HTTP API |
 | ~~B~~ | ~~**Tika not wired** — `local.d/tika.conf` lacks the `external_services { tika { } }` block; rspamd never submits attachments to Tika~~ | **Fixed**: rspamd 4.x has no built-in tika module; wrote `lua.local.d/tika.lua` plugin using `rspamd_http` to PUT attachments to `/tika` REST endpoint; `TIKA_EXTRACTED` symbol confirmed in scan log |
 | ~~C~~ | ~~**IMAPSieve Bayes learning broken** — three bugs: (1) `rspamd.env` owned `root:root 600`, unreadable by `vpopmail` sieve pipe user; (2) scripts POSTed to scanner port 11333 instead of controller port 11334; (3) endpoint was `/learn_spam` (wrong) not `/learnspam`~~ | **Fixed**: entrypoint now chowns `rspamd.env` to `vpopmail:vchkpw`; scripts use `RSPAMD_CONTROLLER_PORT=11334` and correct `/learnspam`/`/learnham` paths; rspamd controller password is env-var driven via custom entrypoint |
+| ~~D~~ | ~~**rspamd SURBL override noop** — `override.d/surbl.conf` targets the deprecated `surbl` module; rspamd 4.x SURBL checks (`SURBL_MULTI`, `SURBL_HASHBL`) are part of the `rbl` module and still scored. Also: `max_score = 0.0` is not enforced by rspamd (quirk — must use `0.001`)~~ | **Fixed**: write `override.d/surbl_group.conf` with complete group override (`max_score = 0.001`, all SURBL symbol weights explicitly `0.0`); rspamd SURBL symbols confirmed at `0.00` in scan log |
+| ~~E~~ | ~~**surblqueue not in QMAILQUEUE chain** — run scripts set `SURBL=1` shell variable but kept `QMAILQUEUE=qmail-dkim`; surblqueue was never invoked~~ | **Fixed**: conditionally set `QMAILQUEUE=surblqueue` + `SURBLQUEUE=qmail-dkim` when `SURBL_VAL=1` in all three SMTP run scripts |
+| ~~F~~ | ~~**`SURBL` env var not exported to surblfilter** — surblfilter source: `if (!(x = env_get("SURBL"))) do_surbl = 0;`; run scripts set a shell variable `SURBL_VAL` but never exported `SURBL` to the process environment; surblfilter silently passed all messages~~ | **Fixed**: `export SURBL=1` added to the `SURBL_VAL=1` branch in all three SMTP run scripts |
 
 ### Rspamd / simscan
 
@@ -377,7 +380,9 @@ oletools     — Office macro scanning via olefy/olevba           port:  11343 (
 - [x] **CHKUSER_WRONGRCPTLIMIT=3** — temporarily raised BRTLIMIT to 10; 3rd bad RCPT → `550 5.7.1 sorry, you are violating our security policies (chkuser)` ✓
 - [ ] **SPF reject** — skip; no DNS control in test env
 - [ ] **DKIM verify** — send DKIM-signed mail, check log for `dkim=pass`; broken sig → `dkim=fail`
-- [ ] **SURBL** — set `control/surbl=1`, send mail with SURBL-listed URL, confirm rejection
+- [x] **SURBL** — `SURBL_LAYER=qmail`; body with `http://test.surbl.org/` → `554 message contains an URL listed in SURBL blocklist` ✓
+  - surblfilter domain stripping: `test.surbl.org` stripped to `surbl.org` (2-level) → NXDOMAIN; workaround for test: add `surbl.org` to `level2-tlds` so 3-level lookup hits `127.0.0.72`
+  - Bugs D, E, F found and fixed (see bugs table above)
 - [x] **Greylisting (jgreylist)** — `control/jgreylist=1`; first attempt → `450 GREYLIST Try again later.`; triplet stored in `/srv/mail/jgreylist/{ip-octets}/` hierarchy as empty file; retry after delay → `250 ok` ✓
 - [x] **Greylisting (qmail-spp)** — set `GREYLIST_USER` in `.env`; entrypoint writes `control/greylisting` + `control/mysql.cnf`; first attempt from non-relay IP (172.18.0.3) → `451 temporary failure (#4.3.0)`; triplet inserted in `greylisting_data` (`blocked_count=1`); retry after `block_expires` → `greylisting: ... exists (id=1) - accepting`, `passed_count=1` ✓
   - Root causes found: wrong DB schema (needed `greylisting_lists` + `greylisting_data`, not single `greylisting` table); missing `GREYLISTING=""` env var; plugin silently skips RELAYCLIENT connections (must test from non-relay IP)

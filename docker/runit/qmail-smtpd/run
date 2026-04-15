@@ -19,6 +19,7 @@ export DROP_PRE_GREET=1
 # bodies for SURBL-listed URIs before DKIM signing / scanning.
 SURBL_VAL=$(cat $QMAILDIR/control/surbl 2>/dev/null || echo 0)
 if [ "$SURBL_VAL" = "1" ]; then
+    export SURBL=1
     export QMAILQUEUE=$QMAILDIR/bin/surblqueue
     export SURBLQUEUE=$QMAILDIR/bin/qmail-dkim
 else

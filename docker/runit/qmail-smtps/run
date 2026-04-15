@@ -33,6 +33,7 @@ export DROP_PRE_GREET=1
 # SURBL and DKIM — same as port 25
 SURBL_VAL=$(cat $QMAILDIR/control/surbl 2>/dev/null || echo 0)
 if [ "$SURBL_VAL" = "1" ]; then
+    export SURBL=1
     export QMAILQUEUE=$QMAILDIR/bin/surblqueue
     export SURBLQUEUE=$QMAILDIR/bin/qmail-dkim
 else
